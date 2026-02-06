@@ -1,0 +1,36 @@
+[package]
+name = "chameleon"
+version = "0.1.0"
+edition = "2021"
+description = "Efficient lost-in-space astrometric plate solver for embedded systems"
+license = "MIT"
+keywords = ["astronomy", "plate-solving", "astrometry", "embedded"]
+categories = ["science", "embedded"]
+
+[dependencies]
+memmap2 = "0.9"
+bytemuck = { version = "1.14", features = ["derive"] }
+thiserror = "2.0"
+image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+criterion = "0.5"
+rand = "0.8"
+approx = "0.5"
+
+[features]
+default = ["extract"]
+extract = ["image"]
+
+[[bench]]
+name = "solve_benchmark"
+harness = false
+
+[[bin]]
+name = "build-index"
+path = "src/bin/build_index.rs"
+
+[[bin]]
+name = "solve-image"
+path = "src/bin/solve_image.rs"
+required-features = ["extract"]

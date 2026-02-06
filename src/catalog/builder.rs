@@ -1,0 +1,405 @@
+//! Index builder for creating pattern databases from star catalogs.
+
+use std::collections::HashMap;
+use std::io::{Write, BufWriter};
+use std::fs::File;
+use std::path::Path;
+
+use bytemuck::bytes_of;
+
+use crate::core::types::{RaDec, Vec3};
+use crate::core::math::angular_separation;
+use super::index::{IndexHeader, INDEX_MAGIC, INDEX_VERSION};
+use super::star::{PackedStar, PackedPattern};
+use super::error::CatalogError;
+
+/// Configuration for building an index.
+#[derive(Debug, Clone)]
+pub struct BuildConfig {
+    /// Minimum FOV in degrees (patterns smaller than this are excluded).
+    pub fov_min_deg: f32,
+    /// Maximum FOV in degrees (patterns larger than this are excluded).
+    pub fov_max_deg: f32,
+    /// Magnitude limit (exclude stars fainter than this).
+    pub mag_limit: f32,
+    /// Number of hash bins.
+    pub num_bins: u32,
+    /// Maximum number of stars to use for pattern generation.
+    pub max_stars: usize,
+    /// Maximum patterns per star (to limit index size).
+    pub max_patterns_per_star: usize,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            fov_min_deg: 10.0,
+            fov_max_deg: 30.0,
+            mag_limit: 7.0,
+            num_bins: 1_000_000, // 1M bins
+            max_stars: 5000,
+            max_patterns_per_star: 100,
+        }
+    }
+}
+
+/// A star during index building (before packing).
+#[derive(Debug, Clone)]
+pub struct BuildStar {
+    /// Original catalog ID (e.g., Hipparcos number).
+    pub catalog_id: u32,
+    /// Position.
+    pub position: RaDec,
+    /// Visual magnitude.
+    pub magnitude: f32,
+}
+
+/// Index builder.
+pub struct IndexBuilder {
+    config: BuildConfig,
+    stars: Vec<BuildStar>,
+}
+
+impl IndexBuilder {
+    /// Create a new index builder with the given configuration.
+    pub fn new(config: BuildConfig) -> Self {
+        Self {
+            config,
+            stars: Vec::new(),
+        }
+    }
+
+    /// Add a star to the catalog.
+    pub fn add_star(&mut self, catalog_id: u32, ra: f64, dec: f64, magnitude: f32) {
+        if magnitude <= self.config.mag_limit {
+            self.stars.push(BuildStar {
+                catalog_id,
+                position: RaDec::new(ra, dec),
+                magnitude,
+            });
+        }
+    }
+
+    /// Add multiple stars.
+    pub fn add_stars(&mut self, stars: impl Iterator<Item = (u32, f64, f64, f32)>) {
+        for (id, ra, dec, mag) in stars {
+            self.add_star(id, ra, dec, mag);
+        }
+    }
+
+    /// Build the index and write it to a file.
+    pub fn build<P: AsRef<Path>>(&mut self, output_path: P) -> Result<BuildStats, CatalogError> {
+        // Sort stars by brightness
+        self.stars.sort_by(|a, b| {
+            a.magnitude
+                .partial_cmp(&b.magnitude)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Limit to max_stars
+        if self.stars.len() > self.config.max_stars {
+            self.stars.truncate(self.config.max_stars);
+        }
+
+        let num_stars = self.stars.len();
+        println!("Building index with {} stars", num_stars);
+
+        // Precompute unit vectors
+        let unit_vectors: Vec<Vec3> = self.stars.iter().map(|s| s.position.to_vec3()).collect();
+
+        // Generate patterns and bin them
+        let fov_min_rad = (self.config.fov_min_deg as f64).to_radians();
+        let fov_max_rad = (self.config.fov_max_deg as f64).to_radians();
+
+        let mut bins: HashMap<u32, Vec<PackedPattern>> = HashMap::new();
+        let mut total_patterns = 0u64;
+        let mut patterns_per_star = vec![0usize; num_stars];
+
+        // Generate quads from combinations of 4 stars
+        // Build neighbor lists first: for each star, stars within FOV distance
+        println!("Generating patterns...");
+        println!("  Building neighbor lists...");
+
+        let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); num_stars];
+        for i in 0..num_stars {
+            for j in (i + 1)..num_stars {
+                let d = unit_vectors[i].angle_to(&unit_vectors[j]);
+                if d <= fov_max_rad * 1.2 {
+                    neighbors[i].push(j);
+                    neighbors[j].push(i);
+                }
+            }
+            if i % 1000 == 0 {
+                println!("    Processed {}/{} stars", i, num_stars);
+            }
+        }
+
+        // Generate patterns from neighbor combinations
+        println!("  Generating patterns...");
+        for i in 0..num_stars {
+            if i % 500 == 0 {
+                println!("    Star {}/{}", i, num_stars);
+            }
+
+            if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                continue;
+            }
+
+            // Get neighbors of star i, sorted by index
+            let mut ni: Vec<usize> = neighbors[i].iter().filter(|&&j| j > i).cloned().collect();
+            ni.sort();
+
+            if ni.len() < 3 {
+                continue;
+            }
+
+            // Generate quads [i, j, k, l] where i < j < k < l and all are neighbors
+            // Use multiple passes with different starting offsets to sample evenly
+            let ni_len = ni.len();
+            let passes = [0, ni_len / 4, ni_len / 2, 3 * ni_len / 4];
+
+            for &pass_offset in &passes {
+                if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                    break;
+                }
+
+                for ji in 0..ni_len {
+                    let j_idx = (ji + pass_offset) % ni_len;
+                    let j = ni[j_idx];
+                    if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                        break;
+                    }
+
+                    let d_ij = unit_vectors[i].angle_to(&unit_vectors[j]);
+                    if d_ij < fov_min_rad * 0.1 {
+                        continue;
+                    }
+
+                    for ki in (j_idx + 1)..ni_len {
+                        let k = ni[ki];
+                        if k <= j { continue; }
+                        if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                            break;
+                        }
+
+                        let d_ik = unit_vectors[i].angle_to(&unit_vectors[k]);
+                        let d_jk = unit_vectors[j].angle_to(&unit_vectors[k]);
+                        if d_ik > fov_max_rad * 1.5 || d_jk > fov_max_rad * 1.5 {
+                            continue;
+                        }
+
+                        for li in (ki + 1)..ni_len {
+                            let l = ni[li];
+                            if l <= k { continue; }
+                            if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                                break;
+                            }
+
+                            let d_il = unit_vectors[i].angle_to(&unit_vectors[l]);
+                            let d_jl = unit_vectors[j].angle_to(&unit_vectors[l]);
+                            let d_kl = unit_vectors[k].angle_to(&unit_vectors[l]);
+
+                            let mut distances = [d_ij, d_ik, d_il, d_jk, d_jl, d_kl];
+                            let max_dist = distances.iter().cloned().fold(0.0f64, f64::max);
+
+                            if max_dist >= fov_min_rad && max_dist <= fov_max_rad {
+                                for d in &mut distances {
+                                    *d /= max_dist;
+                                }
+                                distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+                                let ratios: [f64; 5] = [
+                                    distances[0], distances[1], distances[2],
+                                    distances[3], distances[4],
+                                ];
+
+                                let hash_bin = compute_hash(&ratios, self.config.num_bins);
+                                let pattern = PackedPattern::new(
+                                    [i as u16, j as u16, k as u16, l as u16],
+                                    ratios,
+                                );
+
+                                bins.entry(hash_bin).or_default().push(pattern);
+                                total_patterns += 1;
+                                patterns_per_star[i] += 1;
+                                patterns_per_star[j] += 1;
+                                patterns_per_star[k] += 1;
+                                patterns_per_star[l] += 1;
+                            }
+                        }
+                    }
+                }
+            }  // end pass_offset loop
+        }
+
+        println!("Generated {} patterns in {} bins", total_patterns, bins.len());
+
+        // Write index file
+        let file = File::create(output_path)?;
+        let mut writer = BufWriter::new(file);
+
+        // Write header
+        let header = IndexHeader::new(
+            num_stars as u32,
+            total_patterns as u32,
+            self.config.num_bins,
+            self.config.fov_min_deg,
+            self.config.fov_max_deg,
+            self.config.mag_limit,
+        );
+        writer.write_all(bytes_of(&header))?;
+
+        // Write stars
+        for star in &self.stars {
+            let packed = PackedStar::new(
+                star.position.ra,
+                star.position.dec,
+                star.magnitude,
+                (star.catalog_id & 0xFFFF) as u16,
+            );
+            writer.write_all(bytes_of(&packed))?;
+        }
+
+        // Build bin offsets and pattern array
+        let mut bin_offsets = vec![0u32; self.config.num_bins as usize + 1];
+        let mut all_patterns = Vec::with_capacity(total_patterns as usize);
+
+        let mut current_offset = 0u32;
+        for bin in 0..self.config.num_bins {
+            bin_offsets[bin as usize] = current_offset;
+            if let Some(patterns) = bins.get(&bin) {
+                for p in patterns {
+                    all_patterns.push(*p);
+                }
+                current_offset += patterns.len() as u32;
+            }
+        }
+        bin_offsets[self.config.num_bins as usize] = current_offset;
+
+        // Write bin offsets
+        for offset in &bin_offsets {
+            writer.write_all(&offset.to_le_bytes())?;
+        }
+
+        // Write patterns
+        for pattern in &all_patterns {
+            writer.write_all(bytes_of(pattern))?;
+        }
+
+        writer.flush()?;
+
+        Ok(BuildStats {
+            num_stars: num_stars as u32,
+            num_patterns: total_patterns as u32,
+            num_bins_used: bins.len() as u32,
+            avg_patterns_per_bin: if bins.is_empty() {
+                0.0
+            } else {
+                total_patterns as f64 / bins.len() as f64
+            },
+        })
+    }
+}
+
+/// Statistics from index building.
+#[derive(Debug)]
+pub struct BuildStats {
+    pub num_stars: u32,
+    pub num_patterns: u32,
+    pub num_bins_used: u32,
+    pub avg_patterns_per_bin: f64,
+}
+
+/// Compute the hash bin for a set of edge ratios.
+fn compute_hash(ratios: &[f64; 5], num_bins: u32) -> u32 {
+    // Use a simple multiplicative hash combining all ratios
+    const BINS_PER_DIM: u32 = 100;
+
+    let mut hash: u64 = 0;
+    let mut multiplier: u64 = 1;
+
+    for &r in ratios.iter() {
+        let bin = ((r * BINS_PER_DIM as f64) as u64).min(BINS_PER_DIM as u64 - 1);
+        hash += bin * multiplier;
+        multiplier *= BINS_PER_DIM as u64;
+    }
+
+    (hash % num_bins as u64) as u32
+}
+
+/// Compute hash with tolerance, returning all bins that might match.
+pub fn compute_hash_with_tolerance(ratios: &[f64; 5], num_bins: u32, tolerance: f64) -> Vec<u32> {
+    const BINS_PER_DIM: u32 = 100;
+    let delta = (tolerance * BINS_PER_DIM as f64).ceil() as i32;
+
+    let mut hashes = Vec::new();
+    let centers: Vec<i32> = ratios
+        .iter()
+        .map(|&r| (r * BINS_PER_DIM as f64) as i32)
+        .collect();
+
+    // Generate all combinations within tolerance
+    fn recurse(
+        centers: &[i32],
+        idx: usize,
+        current: &mut [u32; 5],
+        delta: i32,
+        num_bins: u32,
+        hashes: &mut Vec<u32>,
+    ) {
+        const BINS_PER_DIM: u32 = 100;
+
+        if idx == 5 {
+            let mut hash: u64 = 0;
+            let mut multiplier: u64 = 1;
+            for &bin in current.iter() {
+                hash += bin as u64 * multiplier;
+                multiplier *= BINS_PER_DIM as u64;
+            }
+            hashes.push((hash % num_bins as u64) as u32);
+            return;
+        }
+
+        let center = centers[idx];
+        let min_bin = (center - delta).max(0) as u32;
+        let max_bin = (center + delta).min(BINS_PER_DIM as i32 - 1) as u32;
+
+        for bin in min_bin..=max_bin {
+            current[idx] = bin;
+            recurse(centers, idx + 1, current, delta, num_bins, hashes);
+        }
+    }
+
+    let mut current = [0u32; 5];
+    recurse(&centers, 0, &mut current, delta, num_bins, &mut hashes);
+
+    // Remove duplicates
+    hashes.sort();
+    hashes.dedup();
+    hashes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_hash_deterministic() {
+        let ratios = [0.1, 0.2, 0.3, 0.4, 0.5];
+        let h1 = compute_hash(&ratios, 1_000_000);
+        let h2 = compute_hash(&ratios, 1_000_000);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_hash_with_tolerance() {
+        let ratios = [0.5, 0.5, 0.5, 0.5, 0.5];
+        let hashes = compute_hash_with_tolerance(&ratios, 1_000_000, 0.01);
+        // Should return multiple bins
+        assert!(hashes.len() > 1);
+
+        // Original hash should be included
+        let original = compute_hash(&ratios, 1_000_000);
+        assert!(hashes.contains(&original));
+    }
+}

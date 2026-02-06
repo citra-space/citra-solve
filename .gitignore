@@ -1,0 +1,5 @@
+/target
+*.idx
+*.dat
+*.jpg
+*.fits
