@@ -2,9 +2,9 @@
 
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 
-use chameleon::core::types::{RaDec, DetectedStar};
-use chameleon::pattern::{generate_quads, compute_hash};
-use chameleon::wcs::Wcs;
+use citra_solve::core::types::{RaDec, DetectedStar};
+use citra_solve::pattern::{generate_quads, compute_hash};
+use citra_solve::wcs::Wcs;
 
 fn bench_quad_generation(c: &mut Criterion) {
     let mut group = c.benchmark_group("quad_generation");

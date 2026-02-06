@@ -1,6 +1,6 @@
 //! Check star positions in the index to understand pattern generation.
 
-use chameleon::catalog::Index;
+use citra_solve::catalog::Index;
 
 fn main() {
     let index_path = "hipparcos_deep.idx";

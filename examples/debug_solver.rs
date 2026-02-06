@@ -1,12 +1,12 @@
 //! Debug the solver pipeline step by step.
 
-use chameleon::catalog::Index;
-use chameleon::core::types::RaDec;
-use chameleon::extract::{extract_stars, ExtractionConfig};
-use chameleon::pattern::{generate_quads, PatternMatcher};
-use chameleon::solver::hypothesis::generate_hypotheses;
-use chameleon::solver::verify::{verify_hypothesis, VerifyConfig};
-use chameleon::wcs::Wcs;
+use citra_solve::catalog::Index;
+use citra_solve::core::types::RaDec;
+use citra_solve::extract::{extract_stars, ExtractionConfig};
+use citra_solve::pattern::{generate_quads, PatternMatcher};
+use citra_solve::solver::hypothesis::generate_hypotheses;
+use citra_solve::solver::verify::{verify_hypothesis, VerifyConfig};
+use citra_solve::wcs::Wcs;
 
 fn main() {
     let image_path = "exposure_5.jpg";

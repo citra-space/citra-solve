@@ -1,9 +1,9 @@
 //! Debug centroids by comparing detected positions to projected catalog positions.
 
-use chameleon::catalog::Index;
-use chameleon::core::types::RaDec;
-use chameleon::extract::{extract_stars, ExtractionConfig};
-use chameleon::wcs::Wcs;
+use citra_solve::catalog::Index;
+use citra_solve::core::types::RaDec;
+use citra_solve::extract::{extract_stars, ExtractionConfig};
+use citra_solve::wcs::Wcs;
 
 fn main() {
     let image_path = "exposure_5.jpg";

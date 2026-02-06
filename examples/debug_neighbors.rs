@@ -1,8 +1,8 @@
 //! Debug neighbor relationships between our target stars.
 
-use chameleon::catalog::Index;
-use chameleon::core::types::RaDec;
-use chameleon::core::math::angular_separation;
+use citra_solve::catalog::Index;
+use citra_solve::core::types::RaDec;
+use citra_solve::core::math::angular_separation;
 
 fn main() {
     let index_path = "hipparcos_deep.idx";

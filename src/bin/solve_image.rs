@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use chameleon::catalog::Index;
-use chameleon::extract::{extract_stars, ExtractionConfig};
-use chameleon::solver::{Solver, SolverConfig};
+use citra_solve::catalog::Index;
+use citra_solve::extract::{extract_stars, ExtractionConfig};
+use citra_solve::solver::{Solver, SolverConfig};
 use image::GenericImageView;
 
 fn main() -> ExitCode {

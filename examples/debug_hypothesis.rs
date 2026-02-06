@@ -1,11 +1,11 @@
 //! Debug hypothesis generation for the correct pattern match.
 
-use chameleon::catalog::Index;
-use chameleon::core::types::RaDec;
-use chameleon::core::math::angular_separation;
-use chameleon::extract::{extract_stars, ExtractionConfig};
-use chameleon::pattern::generate_quads;
-use chameleon::wcs::Wcs;
+use citra_solve::catalog::Index;
+use citra_solve::core::types::RaDec;
+use citra_solve::core::math::angular_separation;
+use citra_solve::extract::{extract_stars, ExtractionConfig};
+use citra_solve::pattern::generate_quads;
+use citra_solve::wcs::Wcs;
 
 const PERMUTATIONS_4: [[usize; 4]; 24] = [
     [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
@@ -114,8 +114,8 @@ fn main() {
 }
 
 fn estimate_wcs(
-    detected_stars: &[chameleon::core::types::DetectedStar],
-    matches: &[(usize, chameleon::core::types::CatalogStar)],
+    detected_stars: &[citra_solve::core::types::DetectedStar],
+    matches: &[(usize, citra_solve::core::types::CatalogStar)],
     _image_width: u32,
     _image_height: u32,
 ) -> Option<Wcs> {

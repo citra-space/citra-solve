@@ -1,8 +1,8 @@
-//! # Chameleon
+//! # citra-solve
 //!
 //! Efficient lost-in-space astrometric plate solver for embedded systems.
 //!
-//! Chameleon uses geometric hashing of 4-star patterns (quads) to achieve
+//! citra-solve uses geometric hashing of 4-star patterns (quads) to achieve
 //! fast, memory-efficient plate solving suitable for wide field-of-view
 //! systems with significant optical distortion.
 //!
@@ -16,7 +16,7 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use chameleon::{Solver, SolverConfig, DetectedStar, Index};
+//! use citra_solve::{Solver, SolverConfig, DetectedStar, Index};
 //!
 //! // Load a pre-built index
 //! let index = Index::open("hipparcos.idx").unwrap();

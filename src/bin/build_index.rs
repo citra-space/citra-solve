@@ -19,7 +19,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use chameleon::catalog::builder::{BuildConfig, IndexBuilder};
+use citra_solve::catalog::builder::{BuildConfig, IndexBuilder};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();

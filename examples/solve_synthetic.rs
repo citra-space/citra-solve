@@ -6,12 +6,12 @@
 //! 3. Attempts to solve it
 //! 4. Reports accuracy metrics
 
-use chameleon::catalog::builder::{BuildConfig, IndexBuilder};
-use chameleon::catalog::Index;
-use chameleon::bench::synthetic::{generate_field, SyntheticConfig};
-use chameleon::core::types::RaDec;
-use chameleon::core::math::angular_separation_arcsec;
-use chameleon::solver::{Solver, SolverConfig};
+use citra_solve::catalog::builder::{BuildConfig, IndexBuilder};
+use citra_solve::catalog::Index;
+use citra_solve::bench::synthetic::{generate_field, SyntheticConfig};
+use citra_solve::core::types::RaDec;
+use citra_solve::core::math::angular_separation_arcsec;
+use citra_solve::solver::{Solver, SolverConfig};
 
 use std::time::Instant;
 

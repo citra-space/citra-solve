@@ -1,4 +1,4 @@
-# Chameleon
+# citra-solve
 
 Efficient lost-in-space astrometric plate solver for embedded systems.
 
@@ -27,7 +27,7 @@ cargo run --bin build-index -- --synthetic --output test.idx
 ### Using the Solver
 
 ```rust
-use chameleon::{Solver, SolverConfig, DetectedStar, Index};
+use citra_solve::{Solver, SolverConfig, DetectedStar, Index};
 
 // Load a pre-built index
 let index = Index::open("hipparcos.idx")?;
@@ -60,7 +60,7 @@ match solver.solve(&stars, 1024, 768) {
 
 ## Architecture
 
-Chameleon uses a **geometric hashing** approach inspired by [astrometry.net](https://astrometry.net) and [tetra3](https://github.com/esa/tetra3):
+citra-solve uses a **geometric hashing** approach inspired by [astrometry.net](https://astrometry.net) and [tetra3](https://github.com/esa/tetra3):
 
 1. **Pattern Generation**: Extract 4-star "quads" from detected stars
 2. **Geometric Hash**: Compute scale/rotation invariant features (5 normalized edge ratios)
@@ -133,7 +133,7 @@ let config = BuildConfig {
 Run benchmarks against synthetic data:
 
 ```rust
-use chameleon::bench::{BenchmarkSuite, SyntheticConfig};
+use citra_solve::bench::{BenchmarkSuite, SyntheticConfig};
 
 let mut suite = BenchmarkSuite::new();
 suite.run_synthetic(
@@ -150,14 +150,14 @@ suite.print_report();
 Compare with astrometry.net:
 
 ```rust
-use chameleon::bench::comparison::{run_astrometry_net, compare_solutions};
+use citra_solve::bench::comparison::{run_astrometry_net, compare_solutions};
 
 // Run astrometry.net
 let wcs_path = run_astrometry_net("image.fits", 5.0, 30.0, 60)?;
 let astrometry_wcs = parse_astrometry_wcs(&wcs_path)?;
 
 // Compare solutions
-let comparison = compare_solutions(&chameleon_solution, &astrometry_wcs);
+let comparison = compare_solutions(&citra_solution, &astrometry_wcs);
 println!("Position difference: {:.2}\"", comparison.position_diff_arcsec.unwrap());
 ```
 

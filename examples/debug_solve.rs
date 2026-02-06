@@ -1,10 +1,10 @@
 //! Debug script to understand why solving fails.
 
-use chameleon::catalog::builder::{BuildConfig, IndexBuilder};
-use chameleon::catalog::Index;
-use chameleon::core::types::DetectedStar;
-use chameleon::pattern::{generate_quads, PatternMatcher, compute_hash};
-use chameleon::wcs::Wcs;
+use citra_solve::catalog::builder::{BuildConfig, IndexBuilder};
+use citra_solve::catalog::Index;
+use citra_solve::core::types::DetectedStar;
+use citra_solve::pattern::{generate_quads, PatternMatcher, compute_hash};
+use citra_solve::wcs::Wcs;
 
 fn main() {
     println!("Debug: Building small index...\n");
@@ -54,7 +54,7 @@ fn main() {
     println!("Creating test field from catalog stars...\n");
 
     // Create WCS for 20° FOV
-    let center_radec = chameleon::core::types::RaDec::new(center_ra, center_dec);
+    let center_radec = citra_solve::core::types::RaDec::new(center_ra, center_dec);
     // CD matrix is in DEGREES per pixel (FITS convention)
     let pixel_scale_deg: f64 = 20.0 / 1024.0; // 20 deg FOV for 1024 px
     let wcs = Wcs::new(

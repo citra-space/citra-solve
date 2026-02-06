@@ -1,8 +1,8 @@
 //! Debug pattern matching on a real image.
 
-use chameleon::catalog::Index;
-use chameleon::extract::{extract_stars, ExtractionConfig};
-use chameleon::pattern::{generate_quads, PatternMatcher, compute_hash};
+use citra_solve::catalog::Index;
+use citra_solve::extract::{extract_stars, ExtractionConfig};
+use citra_solve::pattern::{generate_quads, PatternMatcher, compute_hash};
 
 fn main() {
     let image_path = "exposure_5.jpg";

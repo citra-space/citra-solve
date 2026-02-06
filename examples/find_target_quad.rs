@@ -1,6 +1,6 @@
 //! Find our specific target quad in the index.
 
-use chameleon::catalog::Index;
+use citra_solve::catalog::Index;
 
 fn main() {
     let index_path = "hipparcos_deep.idx";

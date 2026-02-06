@@ -1,5 +1,5 @@
 [package]
-name = "chameleon"
+name = "citra-solve"
 version = "0.1.0"
 edition = "2021"
 description = "Efficient lost-in-space astrometric plate solver for embedded systems"
