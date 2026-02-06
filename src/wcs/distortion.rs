@@ -255,18 +255,273 @@ impl SipDistortion {
     }
 }
 
-/// Fit SIP distortion coefficients from residuals.
+/// Fit SIP distortion coefficients from matched star pairs.
 ///
-/// Given a set of (pixel, sky) correspondences and an initial WCS,
+/// Given detected pixel positions, catalog sky positions, and an initial WCS,
 /// fit polynomial distortion to minimize residuals.
-pub fn fit_distortion(
-    _pixel_coords: &[(f64, f64)],
-    _sky_coords: &[(f64, f64)], // Projected to intermediate coordinates
-    _order: usize,
+///
+/// # Arguments
+/// * `detected_pixels` - Detected star positions (x, y)
+/// * `catalog_sky` - Catalog star positions (RaDec)
+/// * `wcs` - Initial WCS (without distortion)
+/// * `order` - Polynomial order (typically 2-4)
+///
+/// # Returns
+/// SIP distortion coefficients that minimize residuals
+pub fn fit_sip_distortion(
+    detected_pixels: &[(f64, f64)],
+    catalog_sky: &[crate::core::types::RaDec],
+    wcs: &super::projection::Wcs,
+    order: usize,
 ) -> SipDistortion {
-    // TODO: Implement least-squares fitting of SIP coefficients
-    // This requires solving a linear system for the polynomial coefficients
-    SipDistortion::default()
+    if detected_pixels.len() != catalog_sky.len() || detected_pixels.len() < 6 {
+        return SipDistortion::default();
+    }
+
+    let order = order.min(MAX_SIP_ORDER).max(2);
+    let crpix = wcs.crpix();
+
+    // Compute residuals: (predicted - detected) in pixel space
+    // We want to find corrections that, when added to detected positions,
+    // give us positions that project correctly to sky coordinates
+    let mut data: Vec<(f64, f64, f64, f64)> = Vec::new(); // (u, v, residual_x, residual_y)
+
+    for (det, sky) in detected_pixels.iter().zip(catalog_sky.iter()) {
+        let (pred_x, pred_y) = wcs.sky_to_pixel(sky);
+        let u = det.0 - crpix.0;
+        let v = det.1 - crpix.1;
+        // Residual: how much we need to shift the detected position
+        let res_x = pred_x - det.0;
+        let res_y = pred_y - det.1;
+        data.push((u, v, res_x, res_y));
+    }
+
+    // Build design matrix for polynomial terms (starting at order 2)
+    // Terms: u², uv, v², u³, u²v, uv², v³, ...
+    // Number of terms for orders 2..=order: Σ(i+1) for i in 2..=order = (order-1)*order/2 + (order-1)
+    let num_terms = count_sip_terms(order);
+    let n = data.len();
+
+    if n < num_terms {
+        return SipDistortion::default();
+    }
+
+    // Build design matrix A and target vectors b_x, b_y
+    let mut a_mat = vec![vec![0.0; num_terms]; n];
+    let mut b_x = vec![0.0; n];
+    let mut b_y = vec![0.0; n];
+
+    for (row, (u, v, res_x, res_y)) in data.iter().enumerate() {
+        b_x[row] = *res_x;
+        b_y[row] = *res_y;
+
+        // Fill polynomial terms
+        let mut col = 0;
+        for total_order in 2..=order {
+            for i in 0..=total_order {
+                let j = total_order - i;
+                let term = u.powi(i as i32) * v.powi(j as i32);
+                a_mat[row][col] = term;
+                col += 1;
+            }
+        }
+    }
+
+    // Solve least squares: A^T A x = A^T b using normal equations
+    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms);
+    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms);
+
+    // Build SIP distortion from coefficients
+    let mut sip = SipDistortion::new(order);
+
+    let mut col = 0;
+    for total_order in 2..=order {
+        for i in 0..=total_order {
+            let j = total_order - i;
+            if let Some(c) = coeffs_x.as_ref() {
+                sip.set_a(i, j, c[col]);
+            }
+            if let Some(c) = coeffs_y.as_ref() {
+                sip.set_b(i, j, c[col]);
+            }
+            col += 1;
+        }
+    }
+
+    // Compute inverse coefficients (AP, BP) by fitting reverse residuals
+    fit_inverse_coefficients(&mut sip, detected_pixels, catalog_sky, wcs);
+
+    sip
+}
+
+/// Count number of SIP polynomial terms for orders 2 through max_order.
+fn count_sip_terms(max_order: usize) -> usize {
+    let mut count = 0;
+    for order in 2..=max_order {
+        count += order + 1;
+    }
+    count
+}
+
+/// Solve normal equations A^T A x = A^T b using Cholesky-like approach.
+fn solve_normal_equations(a_mat: &[Vec<f64>], b: &[f64], num_vars: usize) -> Option<Vec<f64>> {
+    let n = a_mat.len();
+    if n == 0 || num_vars == 0 {
+        return None;
+    }
+
+    // Compute A^T A
+    let mut ata = vec![vec![0.0; num_vars]; num_vars];
+    for i in 0..num_vars {
+        for j in 0..num_vars {
+            let mut sum = 0.0;
+            for row in 0..n {
+                sum += a_mat[row][i] * a_mat[row][j];
+            }
+            ata[i][j] = sum;
+        }
+    }
+
+    // Compute A^T b
+    let mut atb = vec![0.0; num_vars];
+    for i in 0..num_vars {
+        let mut sum = 0.0;
+        for row in 0..n {
+            sum += a_mat[row][i] * b[row];
+        }
+        atb[i] = sum;
+    }
+
+    // Solve using Gaussian elimination with partial pivoting
+    gaussian_solve(&mut ata, &mut atb)
+}
+
+/// Gaussian elimination with partial pivoting.
+fn gaussian_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
+    let n = a.len();
+    if n == 0 || b.len() != n {
+        return None;
+    }
+
+    // Forward elimination
+    for col in 0..n {
+        // Partial pivoting
+        let mut max_row = col;
+        let mut max_val = a[col][col].abs();
+        for row in (col + 1)..n {
+            if a[row][col].abs() > max_val {
+                max_val = a[row][col].abs();
+                max_row = row;
+            }
+        }
+
+        if max_val < 1e-15 {
+            return None; // Singular matrix
+        }
+
+        if max_row != col {
+            a.swap(col, max_row);
+            b.swap(col, max_row);
+        }
+
+        // Eliminate below
+        for row in (col + 1)..n {
+            let factor = a[row][col] / a[col][col];
+            a[row][col] = 0.0;
+            for j in (col + 1)..n {
+                a[row][j] -= factor * a[col][j];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    // Back substitution
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut sum = b[i];
+        for j in (i + 1)..n {
+            sum -= a[i][j] * x[j];
+        }
+        x[i] = sum / a[i][i];
+    }
+
+    Some(x)
+}
+
+/// Fit inverse SIP coefficients (AP, BP) for sky->pixel direction.
+fn fit_inverse_coefficients(
+    sip: &mut SipDistortion,
+    detected_pixels: &[(f64, f64)],
+    catalog_sky: &[crate::core::types::RaDec],
+    wcs: &super::projection::Wcs,
+) {
+    let order = sip.a_order.max(sip.b_order);
+    if order < 2 {
+        return;
+    }
+
+    let crpix = wcs.crpix();
+    let num_terms = count_sip_terms(order);
+    let n = detected_pixels.len();
+
+    if n < num_terms {
+        return;
+    }
+
+    // For inverse: given intermediate coordinates (u', v'), find correction to get (u, v)
+    // u' = u + A(u,v), so u = u' - A(u,v) ≈ u' + AP(u', v')
+    let mut data: Vec<(f64, f64, f64, f64)> = Vec::new();
+
+    for (det, sky) in detected_pixels.iter().zip(catalog_sky.iter()) {
+        let u = det.0 - crpix.0;
+        let v = det.1 - crpix.1;
+
+        // Apply forward distortion to get u', v'
+        let (u_prime, v_prime) = sip.apply_forward(u, v);
+
+        // The inverse correction: what we need to add to u' to get u
+        let corr_x = u - u_prime;
+        let corr_y = v - v_prime;
+
+        data.push((u_prime, v_prime, corr_x, corr_y));
+    }
+
+    // Build design matrix
+    let mut a_mat = vec![vec![0.0; num_terms]; n];
+    let mut b_x = vec![0.0; n];
+    let mut b_y = vec![0.0; n];
+
+    for (row, (u, v, res_x, res_y)) in data.iter().enumerate() {
+        b_x[row] = *res_x;
+        b_y[row] = *res_y;
+
+        let mut col = 0;
+        for total_order in 2..=order {
+            for i in 0..=total_order {
+                let j = total_order - i;
+                let term = u.powi(i as i32) * v.powi(j as i32);
+                a_mat[row][col] = term;
+                col += 1;
+            }
+        }
+    }
+
+    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms);
+    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms);
+
+    let mut col = 0;
+    for total_order in 2..=order {
+        for i in 0..=total_order {
+            let j = total_order - i;
+            if let Some(c) = coeffs_x.as_ref() {
+                sip.set_ap(i, j, c[col]);
+            }
+            if let Some(c) = coeffs_y.as_ref() {
+                sip.set_bp(i, j, c[col]);
+            }
+            col += 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +570,73 @@ mod tests {
         assert!(header.contains("A_2_0"));
         assert!(header.contains("B_ORDER"));
         assert!(header.contains("B_0_2"));
+    }
+
+    #[test]
+    fn test_count_sip_terms() {
+        // Order 2: u², uv, v² = 3 terms
+        assert_eq!(count_sip_terms(2), 3);
+        // Order 3: adds u³, u²v, uv², v³ = 4 more terms = 7 total
+        assert_eq!(count_sip_terms(3), 7);
+        // Order 4: adds u⁴, u³v, u²v², uv³, v⁴ = 5 more terms = 12 total
+        assert_eq!(count_sip_terms(4), 12);
+    }
+
+    #[test]
+    fn test_fit_sip_with_known_distortion() {
+        use crate::core::types::RaDec;
+        use super::super::projection::Wcs;
+
+        // Create a WCS at center of image
+        let wcs = Wcs::new(
+            (512.0, 512.0),
+            RaDec::from_degrees(180.0, 45.0),
+            [[1.0 / 3600.0, 0.0], [0.0, 1.0 / 3600.0]], // 1 arcsec/pixel
+        );
+
+        // Create synthetic star positions with known quadratic distortion
+        // True distortion: dx = 1e-5 * u², dy = 1e-5 * v²
+        let mut detected_pixels = Vec::new();
+        let mut catalog_sky = Vec::new();
+
+        for i in -3..=3 {
+            for j in -3..=3 {
+                // Undistorted pixel positions (relative to center)
+                let u = i as f64 * 100.0;
+                let v = j as f64 * 100.0;
+
+                // Apply distortion to get "detected" positions
+                let distortion_x = 1e-5 * u * u;
+                let distortion_y = 1e-5 * v * v;
+                let x_det = 512.0 + u + distortion_x;
+                let y_det = 512.0 + v + distortion_y;
+
+                // The catalog sky position is where it would be without distortion
+                let sky = wcs.pixel_to_sky(512.0 + u, 512.0 + v);
+
+                detected_pixels.push((x_det, y_det));
+                catalog_sky.push(sky);
+            }
+        }
+
+        // Fit SIP distortion
+        let sip = fit_sip_distortion(&detected_pixels, &catalog_sky, &wcs, 2);
+
+        // Check that we recovered approximately the right coefficients
+        // Note: sign is inverted because SIP corrects *away* the distortion
+        // The distortion we added was +1e-5*u², so A_2_0 should be ~-1e-5
+        let a_2_0 = sip.a[2][0];
+        let b_0_2 = sip.b[0][2];
+
+        assert!(
+            (a_2_0 + 1e-5).abs() < 1e-6,
+            "A_2_0 = {}, expected ~-1e-5",
+            a_2_0
+        );
+        assert!(
+            (b_0_2 + 1e-5).abs() < 1e-6,
+            "B_0_2 = {}, expected ~-1e-5",
+            b_0_2
+        );
     }
 }

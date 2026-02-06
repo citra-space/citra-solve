@@ -8,4 +8,5 @@ mod distortion;
 mod transform;
 
 pub use projection::Wcs;
-pub use distortion::SipDistortion;
+pub use distortion::{SipDistortion, fit_sip_distortion};
+pub use transform::WcsWithDistortion;
