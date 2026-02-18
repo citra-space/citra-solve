@@ -6,9 +6,9 @@ use crate::core::types::DetectedStar;
 use crate::catalog::Index;
 use crate::pattern::{generate_quads, PatternMatcher};
 use super::error::SolveError;
-use super::hypothesis::generate_hypotheses;
+use super::hypothesis::{generate_hypotheses, Hypothesis};
 use super::verify::{verify_hypothesis, VerifyConfig, VerifyResult};
-use super::refine::{refine_solution, RefineConfig};
+use super::refine::{refine_solution, refine_linear_wcs, RefineConfig};
 use super::solution::Solution;
 
 /// Configuration for the solver.
@@ -38,10 +38,10 @@ impl Default for SolverConfig {
     fn default() -> Self {
         Self {
             max_stars: 50,
-            max_quads: 100,
-            max_matches: 50,
-            bin_tolerance: 0.02,
-            ratio_tolerance: 0.01,
+            max_quads: 10000,
+            max_matches: 1000,
+            bin_tolerance: 0.05,
+            ratio_tolerance: 0.05,
             verify_config: VerifyConfig::default(),
             refine_config: RefineConfig::default(),
             timeout_ms: 30000, // 30 seconds
@@ -55,10 +55,10 @@ impl SolverConfig {
     pub fn fast() -> Self {
         Self {
             max_stars: 20,
-            max_quads: 30,
-            max_matches: 20,
+            max_quads: 50,
+            max_matches: 30,
             verify_config: VerifyConfig {
-                log_odds_threshold: 15.0,
+                log_odds_threshold: 12.0,
                 ..Default::default()
             },
             timeout_ms: 5000,
@@ -169,8 +169,11 @@ impl<'a> Solver<'a> {
             return Err(SolveError::NoMatches);
         }
 
-        // Verify hypotheses and find best
-        let mut best_result: Option<VerifyResult> = None;
+        // Phase 1: Screen all hypotheses with raw wide verification (no refinement).
+        //
+        // Screening without refinement gives a fair ranking because correct
+        // hypotheses naturally produce lower residuals than wrong ones.
+        let mut candidates: Vec<VerifyResult> = Vec::new();
 
         for hypothesis in hypotheses {
             // Check timeout
@@ -189,43 +192,154 @@ impl<'a> Solver<'a> {
                 &self.config.verify_config,
             );
 
-            // Early termination if we find a very confident match
-            if result.hypothesis.log_odds > self.config.verify_config.log_odds_threshold * 1.5 {
-                best_result = Some(result);
-                break;
-            }
-
-            // Track best result
-            if best_result.is_none()
-                || result.hypothesis.log_odds > best_result.as_ref().unwrap().hypothesis.log_odds
-            {
-                best_result = Some(result);
+            if result.num_matched >= 4 {
+                candidates.push(result);
             }
         }
 
-        let best_result = best_result.ok_or(SolveError::NoMatches)?;
-
-        // Check if best result passes threshold
-        if best_result.hypothesis.log_odds < self.config.verify_config.log_odds_threshold {
-            return Err(SolveError::VerificationFailed(best_result.hypothesis.log_odds));
+        if candidates.is_empty() {
+            return Err(SolveError::NoMatches);
         }
 
-        // Refine the solution
-        let refine_result = refine_solution(
+        // Sort candidates by log_odds (descending) for phase 2
+        candidates.sort_by(|a, b| {
+            b.hypothesis.log_odds
+                .partial_cmp(&a.hypothesis.log_odds)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates.truncate(50);
+
+        // Phase 2: Refine and tight-verify top candidates.
+        //
+        // For each candidate: iteratively refine the WCS with wide tolerance to
+        // bootstrap more matches, then tight-verify to confirm. This ensures only
+        // genuinely correct hypotheses pass the tight tolerance check.
+        let tight_config = VerifyConfig {
+            position_sigma_pixels: 5.0,
+            max_match_distance_pixels: 20.0,
+            ..self.config.verify_config.clone()
+        };
+
+        let mut best_tight: Option<VerifyResult> = None;
+
+        for candidate in &candidates {
+            // Iterative refine-verify with wide tolerance to improve WCS
+            let mut refined = candidate.clone();
+            for _ in 0..3 {
+                if let Some(linear_refined) = refine_linear_wcs(
+                    &sorted_stars,
+                    &refined.hypothesis.star_matches,
+                    &refined.hypothesis.wcs,
+                    image_width,
+                    image_height,
+                ) {
+                    let refined_hyp = Hypothesis::new(
+                        refined.hypothesis.star_matches.clone(),
+                        linear_refined.wcs,
+                        refined.hypothesis.pattern_distance,
+                    );
+                    let refined_result = verify_hypothesis(
+                        &refined_hyp,
+                        &sorted_stars,
+                        self.index,
+                        image_width,
+                        image_height,
+                        &self.config.verify_config,
+                    );
+                    if refined_result.num_matched > refined.num_matched
+                        || refined_result.hypothesis.log_odds > refined.hypothesis.log_odds
+                    {
+                        refined = refined_result;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Final tight verification
+            let wcs_for_tight = if let Some(linear_re) = refine_linear_wcs(
+                &sorted_stars,
+                &refined.hypothesis.star_matches,
+                &refined.hypothesis.wcs,
+                image_width,
+                image_height,
+            ) {
+                linear_re.wcs
+            } else {
+                refined.hypothesis.wcs.clone()
+            };
+
+            let tight_hyp = Hypothesis::new(
+                refined.hypothesis.star_matches.clone(),
+                wcs_for_tight,
+                refined.hypothesis.pattern_distance,
+            );
+            let tight_result = verify_hypothesis(
+                &tight_hyp,
+                &sorted_stars,
+                self.index,
+                image_width,
+                image_height,
+                &tight_config,
+            );
+
+            if tight_result.hypothesis.log_odds >= tight_config.log_odds_threshold {
+                // Select by match count first (most robust discriminator),
+                // then by log_odds as tiebreaker.
+                let dominated = best_tight.as_ref().map_or(true, |best| {
+                    tight_result.num_matched > best.num_matched
+                        || (tight_result.num_matched == best.num_matched
+                            && tight_result.hypothesis.log_odds > best.hypothesis.log_odds)
+                });
+                if dominated {
+                    best_tight = Some(tight_result);
+                }
+            }
+        }
+
+        let best_result = best_tight.ok_or_else(|| {
+            // Report the best candidate's tight log_odds for debugging
+            let best_candidate_odds = candidates
+                .first()
+                .map(|c| c.hypothesis.log_odds)
+                .unwrap_or(f64::NEG_INFINITY);
+            SolveError::VerificationFailed(best_candidate_odds)
+        })?;
+
+        // Final refinement and solution building
+        let final_wcs;
+        let final_rms;
+        let final_matches = best_result.hypothesis.star_matches.clone();
+
+        if let Some(linear_refined) = refine_linear_wcs(
             &sorted_stars,
-            &best_result.hypothesis.star_matches,
+            &final_matches,
             &best_result.hypothesis.wcs,
-            &self.config.refine_config,
-        );
-
-        // Build final solution
-        let solution = Solution::new(
-            refine_result.wcs,
             image_width,
             image_height,
-            refine_result.rms_arcsec,
+        ) {
+            final_wcs = linear_refined.wcs;
+            final_rms = linear_refined.rms_after_pixels * final_wcs.pixel_scale_arcsec();
+        } else {
+            let refine_result = refine_solution(
+                &sorted_stars,
+                &final_matches,
+                &best_result.hypothesis.wcs,
+                &self.config.refine_config,
+            );
+            final_wcs = refine_result.wcs;
+            final_rms = refine_result.rms_arcsec;
+        }
+
+        let solution = Solution::new(
+            final_wcs,
+            image_width,
+            image_height,
+            final_rms,
             best_result.hypothesis.log_odds,
-            best_result.hypothesis.star_matches,
+            final_matches,
         );
 
         Ok(solution)

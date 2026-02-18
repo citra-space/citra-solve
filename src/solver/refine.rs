@@ -324,7 +324,7 @@ pub fn refine_linear_wcs(
     image_width: u32,
     image_height: u32,
 ) -> Option<LinearRefineResult> {
-    if star_matches.len() < 6 {
+    if star_matches.len() < 4 {
         return None;
     }
 

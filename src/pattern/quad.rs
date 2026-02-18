@@ -31,6 +31,9 @@ impl Quad {
 ///
 /// Stars should be sorted by brightness (brightest first) before calling.
 /// Returns up to `max_quads` patterns from the `max_stars` brightest stars.
+///
+/// Generates all valid quads and then uniformly subsamples to ensure
+/// diverse star combinations are covered across the full brightness range.
 pub fn generate_quads(
     stars: &[DetectedStar],
     max_stars: usize,
@@ -40,8 +43,6 @@ pub fn generate_quads(
     if n < 4 {
         return Vec::new();
     }
-
-    let mut quads = Vec::with_capacity(max_quads.min(n * n * n * n / 24)); // Rough upper bound
 
     // Precompute pairwise distances
     let mut distances = vec![vec![0.0f64; n]; n];
@@ -53,36 +54,62 @@ pub fn generate_quads(
         }
     }
 
-    // Generate all 4-combinations
-    for i in 0..n {
-        if quads.len() >= max_quads {
-            break;
-        }
-        for j in (i + 1)..n {
-            if quads.len() >= max_quads {
-                break;
-            }
-            for k in (j + 1)..n {
-                if quads.len() >= max_quads {
-                    break;
-                }
-                for l in (k + 1)..n {
-                    if quads.len() >= max_quads {
-                        break;
-                    }
+    // Count total valid quads to compute stride
+    let total_combinations = combinations_count(n, 4);
 
-                    if let Some(quad) = make_quad_from_indices(
-                        i, j, k, l,
-                        &distances,
-                    ) {
-                        quads.push(quad);
+    if total_combinations <= max_quads {
+        // Generate all quads if the total count is manageable
+        let mut quads = Vec::with_capacity(total_combinations);
+        for i in 0..n {
+            for j in (i + 1)..n {
+                for k in (j + 1)..n {
+                    for l in (k + 1)..n {
+                        if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
+                            quads.push(quad);
+                        }
                     }
+                }
+            }
+        }
+        return quads;
+    }
+
+    // Use deterministic uniform subsampling: enumerate all quads with a stride
+    // to get approximately max_quads evenly distributed across the combinatorial space.
+    let stride = (total_combinations / max_quads).max(1);
+    let mut quads = Vec::with_capacity(max_quads);
+    let mut count = 0usize;
+
+    for i in 0..n {
+        if quads.len() >= max_quads { break; }
+        for j in (i + 1)..n {
+            if quads.len() >= max_quads { break; }
+            for k in (j + 1)..n {
+                if quads.len() >= max_quads { break; }
+                for l in (k + 1)..n {
+                    if quads.len() >= max_quads { break; }
+                    if count % stride == 0 {
+                        if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
+                            quads.push(quad);
+                        }
+                    }
+                    count += 1;
                 }
             }
         }
     }
 
     quads
+}
+
+/// Compute C(n, k) - number of k-combinations from n elements.
+fn combinations_count(n: usize, k: usize) -> usize {
+    if k > n { return 0; }
+    let mut result = 1usize;
+    for i in 0..k {
+        result = result.saturating_mul(n - i) / (i + 1);
+    }
+    result
 }
 
 /// Generate quads prioritizing patterns with the brightest stars.

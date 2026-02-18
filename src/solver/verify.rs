@@ -182,7 +182,12 @@ fn find_stars_in_fov(
     visible
 }
 
-/// Compute Bayesian log-odds for the match hypothesis.
+/// Compute log-odds score for the match hypothesis.
+///
+/// Combines three factors:
+/// - Residual quality: penalizes when median residual is large relative to sigma
+/// - Match count: logarithmic bonus for number of matches
+/// - Match fraction: bonus for matching a large fraction of detected stars
 fn compute_log_odds(
     num_matched: usize,
     num_detected: usize,
@@ -190,34 +195,32 @@ fn compute_log_odds(
     residuals: &[f64],
     config: &VerifyConfig,
 ) -> f64 {
-    if num_matched == 0 {
-        return f64::NEG_INFINITY;
-    }
-
-    // Require minimum number of matches for a plausible solution
-    if num_matched < 5 {
+    if num_matched < 4 {
         return f64::NEG_INFINITY;
     }
 
     let sigma = config.position_sigma_pixels;
 
-    // Compute mean squared residual normalized by sigma
-    let mean_sq_normalized: f64 = residuals
+    // Use median squared normalized residual (robust to outliers)
+    let mut sq_normalized: Vec<f64> = residuals
         .iter()
         .map(|r| (r / sigma).powi(2))
-        .sum::<f64>()
-        / num_matched as f64;
+        .collect();
+    sq_normalized.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_sq = sq_normalized[sq_normalized.len() / 2];
 
-    // Score based on how well residuals fit expected Gaussian
-    // A good match has mean_sq_normalized close to 1.0
-    // This gives ~0 for perfect match, negative for poor matches
-    let residual_score = -10.0 * (mean_sq_normalized - 1.0).abs();
+    // Residual quality score: gentle penalty when median is near expected,
+    // steep penalty when median is much larger than expected.
+    let residual_score = if median_sq < 2.0 {
+        -2.0 * median_sq
+    } else {
+        -4.0 - 5.0 * (median_sq - 2.0)
+    };
 
-    // Strong bonus for number of matches (log scale to avoid dominating)
-    // More matches = more confidence, but diminishing returns
+    // Match count bonus (log scale to avoid dominating)
     let count_score = (num_matched as f64).ln() * 15.0;
 
-    // Bonus for matching a good fraction of detected stars
+    // Match fraction bonus
     let match_fraction = num_matched as f64 / num_detected.max(1) as f64;
     let fraction_score = 30.0 * match_fraction;
 

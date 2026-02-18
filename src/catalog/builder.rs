@@ -134,8 +134,15 @@ impl IndexBuilder {
             }
         }
 
-        // Generate patterns from neighbor combinations
+        // Generate patterns from neighbor combinations.
+        //
+        // Strategy: For each primary star i, iterate over j neighbors with
+        // a stride to ensure DIVERSE j values are sampled (not just the nearest).
+        // For each (i,j) pair, limit the number of (k,l) combinations to avoid
+        // exhausting the pattern budget on a single j neighbor.
         println!("  Generating patterns...");
+        let max_per_pair = 20; // Max patterns for each (i,j) pair
+
         for i in 0..num_stars {
             if i % 500 == 0 {
                 println!("    Star {}/{}", i, num_stars);
@@ -145,92 +152,132 @@ impl IndexBuilder {
                 continue;
             }
 
-            // Get neighbors of star i, sorted by index
+            // Get neighbors of star i with index > i (to avoid duplicates)
             let mut ni: Vec<usize> = neighbors[i].iter().filter(|&&j| j > i).cloned().collect();
+            // Sort by index (= brightness order since stars are sorted by magnitude)
             ni.sort();
 
             if ni.len() < 3 {
                 continue;
             }
 
-            // Generate quads [i, j, k, l] where i < j < k < l and all are neighbors
-            // Use multiple passes with different starting offsets to sample evenly
             let ni_len = ni.len();
-            let passes = [0, ni_len / 4, ni_len / 2, 3 * ni_len / 4];
 
-            for &pass_offset in &passes {
+            for ji in 0..ni_len {
+                let j = ni[ji];
                 if patterns_per_star[i] >= self.config.max_patterns_per_star {
                     break;
                 }
 
-                for ji in 0..ni_len {
-                    let j_idx = (ji + pass_offset) % ni_len;
-                    let j = ni[j_idx];
-                    if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                let d_ij = unit_vectors[i].angle_to(&unit_vectors[j]);
+                if d_ij < fov_min_rad * 0.1 {
+                    continue;
+                }
+
+                let mut pair_count = 0;
+
+                // Use a stride for k to sample diverse combinations
+                let k_stride = ((ni_len - ji) / 40).max(1);
+
+                let mut ki = ji + 1;
+                while ki < ni_len {
+                    let k = ni[ki];
+                    if k <= j { ki += k_stride; continue; }
+                    if patterns_per_star[i] >= self.config.max_patterns_per_star || pair_count >= max_per_pair {
                         break;
                     }
 
-                    let d_ij = unit_vectors[i].angle_to(&unit_vectors[j]);
-                    if d_ij < fov_min_rad * 0.1 {
+                    let d_ik = unit_vectors[i].angle_to(&unit_vectors[k]);
+                    let d_jk = unit_vectors[j].angle_to(&unit_vectors[k]);
+                    if d_ik > fov_max_rad * 1.5 || d_jk > fov_max_rad * 1.5 {
+                        ki += k_stride;
                         continue;
                     }
 
-                    for ki in (j_idx + 1)..ni_len {
-                        let k = ni[ki];
-                        if k <= j { continue; }
-                        if patterns_per_star[i] >= self.config.max_patterns_per_star {
+                    // Use a stride for l too
+                    let l_stride = ((ni_len - ki) / 20).max(1);
+
+                    let mut li = ki + 1;
+                    while li < ni_len {
+                        let l = ni[li];
+                        if l <= k { li += l_stride; continue; }
+                        if patterns_per_star[i] >= self.config.max_patterns_per_star || pair_count >= max_per_pair {
                             break;
                         }
 
-                        let d_ik = unit_vectors[i].angle_to(&unit_vectors[k]);
-                        let d_jk = unit_vectors[j].angle_to(&unit_vectors[k]);
-                        if d_ik > fov_max_rad * 1.5 || d_jk > fov_max_rad * 1.5 {
-                            continue;
-                        }
+                        let d_il = unit_vectors[i].angle_to(&unit_vectors[l]);
+                        let d_jl = unit_vectors[j].angle_to(&unit_vectors[l]);
+                        let d_kl = unit_vectors[k].angle_to(&unit_vectors[l]);
 
-                        for li in (ki + 1)..ni_len {
-                            let l = ni[li];
-                            if l <= k { continue; }
-                            if patterns_per_star[i] >= self.config.max_patterns_per_star {
-                                break;
-                            }
+                        let angular_distances = [d_ij, d_ik, d_il, d_jk, d_jl, d_kl];
+                        let max_ang = angular_distances.iter().cloned().fold(0.0f64, f64::max);
 
-                            let d_il = unit_vectors[i].angle_to(&unit_vectors[l]);
-                            let d_jl = unit_vectors[j].angle_to(&unit_vectors[l]);
-                            let d_kl = unit_vectors[k].angle_to(&unit_vectors[l]);
+                        if max_ang >= fov_min_rad && max_ang <= fov_max_rad {
+                            // Use tangent-plane (gnomonic) distances for hash ratios.
+                            // This matches what a camera with TAN projection produces,
+                            // so pixel distance ratios match catalog distance ratios.
+                            let centroid = unit_vectors[i]
+                                .add(&unit_vectors[j])
+                                .add(&unit_vectors[k])
+                                .add(&unit_vectors[l])
+                                .normalize();
 
-                            let mut distances = [d_ij, d_ik, d_il, d_jk, d_jl, d_kl];
+                            let proj_i = unit_vectors[i].gnomonic_project(&centroid);
+                            let proj_j = unit_vectors[j].gnomonic_project(&centroid);
+                            let proj_k = unit_vectors[k].gnomonic_project(&centroid);
+                            let proj_l = unit_vectors[l].gnomonic_project(&centroid);
+
+                            let (proj_i, proj_j, proj_k, proj_l) = match (proj_i, proj_j, proj_k, proj_l) {
+                                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                                _ => { li += l_stride; continue; },
+                            };
+
+                            let tp_dist = |a: (f64, f64), b: (f64, f64)| -> f64 {
+                                ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+                            };
+
+                            let mut distances = [
+                                tp_dist(proj_i, proj_j),
+                                tp_dist(proj_i, proj_k),
+                                tp_dist(proj_i, proj_l),
+                                tp_dist(proj_j, proj_k),
+                                tp_dist(proj_j, proj_l),
+                                tp_dist(proj_k, proj_l),
+                            ];
                             let max_dist = distances.iter().cloned().fold(0.0f64, f64::max);
 
-                            if max_dist >= fov_min_rad && max_dist <= fov_max_rad {
-                                for d in &mut distances {
-                                    *d /= max_dist;
-                                }
-                                distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-                                let ratios: [f64; 5] = [
-                                    distances[0], distances[1], distances[2],
-                                    distances[3], distances[4],
-                                ];
-
-                                let hash_bin = compute_hash(&ratios, self.config.num_bins);
-                                let pattern = PackedPattern::new(
-                                    [i as u16, j as u16, k as u16, l as u16],
-                                    ratios,
-                                );
-
-                                bins.entry(hash_bin).or_default().push(pattern);
-                                total_patterns += 1;
-                                patterns_per_star[i] += 1;
-                                patterns_per_star[j] += 1;
-                                patterns_per_star[k] += 1;
-                                patterns_per_star[l] += 1;
+                            for d in &mut distances {
+                                *d /= max_dist;
                             }
+                            distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+                            let ratios: [f64; 5] = [
+                                distances[0], distances[1], distances[2],
+                                distances[3], distances[4],
+                            ];
+
+                            let hash_bin = compute_hash(&ratios, self.config.num_bins);
+                            let pattern = PackedPattern::new(
+                                [i as u16, j as u16, k as u16, l as u16],
+                                ratios,
+                            );
+
+                            bins.entry(hash_bin).or_default().push(pattern);
+                            total_patterns += 1;
+                            patterns_per_star[i] += 1;
+                            patterns_per_star[j] += 1;
+                            patterns_per_star[k] += 1;
+                            patterns_per_star[l] += 1;
+                            pair_count += 1;
                         }
-                    }
-                }
-            }  // end pass_offset loop
-        }
+
+                        li += l_stride;
+                    } // end l loop
+
+                    ki += k_stride;
+                } // end k loop
+            } // end j loop
+        } // end i loop
 
         println!("Generated {} patterns in {} bins", total_patterns, bins.len());
 

@@ -177,6 +177,37 @@ impl Vec3 {
             z: self.z - other.z,
         }
     }
+
+    /// Project this unit vector onto the tangent plane at `center` (gnomonic projection).
+    ///
+    /// Returns (xi, eta) standard coordinates in radians.
+    /// This matches what a camera with TAN projection produces, ensuring
+    /// that distance ratios in the tangent plane match pixel distance ratios.
+    pub fn gnomonic_project(&self, center: &Vec3) -> Option<(f64, f64)> {
+        let dot = self.dot(center);
+        if dot <= 0.0 {
+            return None; // Behind the tangent point
+        }
+
+        // Build orthonormal basis at the tangent point
+        // center is the normal, we need two tangent vectors
+        let radec = center.to_radec();
+        let sin_ra = radec.ra.sin();
+        let cos_ra = radec.ra.cos();
+        let sin_dec = radec.dec.sin();
+        let cos_dec = radec.dec.cos();
+
+        // e_xi points East (direction of increasing RA)
+        let e_xi = Vec3::new(-sin_ra, cos_ra, 0.0);
+        // e_eta points North (direction of increasing Dec)
+        let e_eta = Vec3::new(-sin_dec * cos_ra, -sin_dec * sin_ra, cos_dec);
+
+        // Project: standard coordinates = (star · e_xi, star · e_eta) / (star · center)
+        let xi = self.dot(&e_xi) / dot;
+        let eta = self.dot(&e_eta) / dot;
+
+        Some((xi, eta))
+    }
 }
 
 impl Default for Vec3 {
