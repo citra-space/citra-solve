@@ -6,6 +6,71 @@ use crate::catalog::Index;
 use crate::wcs::Wcs;
 use super::hypothesis::Hypothesis;
 
+/// Spatial index for detected stars to accelerate nearest-neighbor lookups.
+#[derive(Debug, Clone)]
+pub struct DetectedStarIndex {
+    cell_size: f64,
+    grid_width: usize,
+    grid_height: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl DetectedStarIndex {
+    /// Build a grid index over detected stars.
+    pub fn new(
+        detected_stars: &[DetectedStar],
+        image_width: u32,
+        image_height: u32,
+        max_match_distance: f64,
+    ) -> Self {
+        let cell_size = max_match_distance.max(1.0);
+        let grid_width = ((image_width as f64 / cell_size).ceil() as usize).max(1);
+        let grid_height = ((image_height as f64 / cell_size).ceil() as usize).max(1);
+        let mut cells = vec![Vec::new(); grid_width * grid_height];
+
+        for (idx, star) in detected_stars.iter().enumerate() {
+            let gx = (star.x / cell_size).floor() as isize;
+            let gy = (star.y / cell_size).floor() as isize;
+            if gx < 0 || gy < 0 {
+                continue;
+            }
+            let gx = gx as usize;
+            let gy = gy as usize;
+            if gx < grid_width && gy < grid_height {
+                cells[gy * grid_width + gx].push(idx);
+            }
+        }
+
+        Self {
+            cell_size,
+            grid_width,
+            grid_height,
+            cells,
+        }
+    }
+
+    /// Gather nearby candidate detected-star indices around a pixel location.
+    fn nearby_indices(&self, x: f64, y: f64, out: &mut Vec<usize>) {
+        out.clear();
+
+        let gx = (x / self.cell_size).floor() as isize;
+        let gy = (y / self.cell_size).floor() as isize;
+
+        for ny in (gy - 1)..=(gy + 1) {
+            if ny < 0 || ny >= self.grid_height as isize {
+                continue;
+            }
+            for nx in (gx - 1)..=(gx + 1) {
+                if nx < 0 || nx >= self.grid_width as isize {
+                    continue;
+                }
+                let idx = ny as usize * self.grid_width + nx as usize;
+                out.extend(self.cells[idx].iter().copied());
+            }
+        }
+    }
+}
+
 /// Configuration for verification.
 #[derive(Debug, Clone)]
 pub struct VerifyConfig {
@@ -54,6 +119,27 @@ pub fn verify_hypothesis(
     image_height: u32,
     config: &VerifyConfig,
 ) -> VerifyResult {
+    verify_hypothesis_with_index(
+        hypothesis,
+        detected_stars,
+        index,
+        image_width,
+        image_height,
+        config,
+        None,
+    )
+}
+
+/// Verify a hypothesis against detected stars, optionally using a detected-star index.
+pub fn verify_hypothesis_with_index(
+    hypothesis: &Hypothesis,
+    detected_stars: &[DetectedStar],
+    index: &Index,
+    image_width: u32,
+    image_height: u32,
+    config: &VerifyConfig,
+    detected_index: Option<&DetectedStarIndex>,
+) -> VerifyResult {
     let wcs = &hypothesis.wcs;
 
     // Find all catalog stars that should be in the field of view
@@ -63,7 +149,7 @@ pub fn verify_hypothesis(
     let mut matched = Vec::new();
     let mut residuals = Vec::new();
     let mut used_detected = vec![false; detected_stars.len()];
-    let mut used_catalog = vec![false; expected_stars.len()];
+    let mut candidate_indices = Vec::new();
 
     // Greedy matching: for each expected star, find closest unmatched detected star
     for (cat_idx, cat_star) in expected_stars.iter().enumerate() {
@@ -83,18 +169,35 @@ pub fn verify_hypothesis(
         let mut best_dist = f64::MAX;
         let mut best_idx = None;
 
-        for (det_idx, det_star) in detected_stars.iter().enumerate() {
-            if used_detected[det_idx] {
-                continue;
+        if let Some(spatial_index) = detected_index {
+            spatial_index.nearby_indices(pred_x, pred_y, &mut candidate_indices);
+            for det_idx in &candidate_indices {
+                if used_detected[*det_idx] {
+                    continue;
+                }
+                let det_star = &detected_stars[*det_idx];
+                let dx = det_star.x - pred_x;
+                let dy = det_star.y - pred_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < best_dist && dist < config.max_match_distance_pixels {
+                    best_dist = dist;
+                    best_idx = Some(*det_idx);
+                }
             }
+        } else {
+            for (det_idx, det_star) in detected_stars.iter().enumerate() {
+                if used_detected[det_idx] {
+                    continue;
+                }
 
-            let dx = det_star.x - pred_x;
-            let dy = det_star.y - pred_y;
-            let dist = (dx * dx + dy * dy).sqrt();
+                let dx = det_star.x - pred_x;
+                let dy = det_star.y - pred_y;
+                let dist = (dx * dx + dy * dy).sqrt();
 
-            if dist < best_dist && dist < config.max_match_distance_pixels {
-                best_dist = dist;
-                best_idx = Some(det_idx);
+                if dist < best_dist && dist < config.max_match_distance_pixels {
+                    best_dist = dist;
+                    best_idx = Some(det_idx);
+                }
             }
         }
 
@@ -102,7 +205,6 @@ pub fn verify_hypothesis(
             matched.push((det_idx, cat_idx));
             residuals.push(best_dist);
             used_detected[det_idx] = true;
-            used_catalog[cat_idx] = true;
         }
     }
 
@@ -191,7 +293,7 @@ fn find_stars_in_fov(
 fn compute_log_odds(
     num_matched: usize,
     num_detected: usize,
-    _num_expected: usize,
+    num_expected: usize,
     residuals: &[f64],
     config: &VerifyConfig,
 ) -> f64 {
@@ -209,22 +311,25 @@ fn compute_log_odds(
     sq_normalized.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median_sq = sq_normalized[sq_normalized.len() / 2];
 
-    // Residual quality score: gentle penalty when median is near expected,
-    // steep penalty when median is much larger than expected.
-    let residual_score = if median_sq < 2.0 {
-        -2.0 * median_sq
+    // Residual quality score: tolerant near 1-sigma, then quickly penalize.
+    let residual_score = if median_sq < 1.5 {
+        -3.0 * median_sq
     } else {
-        -4.0 - 5.0 * (median_sq - 2.0)
+        -4.5 - 8.0 * (median_sq - 1.5)
     };
 
     // Match count bonus (log scale to avoid dominating)
     let count_score = (num_matched as f64).ln() * 15.0;
 
-    // Match fraction bonus
-    let match_fraction = num_matched as f64 / num_detected.max(1) as f64;
-    let fraction_score = 30.0 * match_fraction;
+    // Match coverage bonuses.
+    let match_fraction_detected = num_matched as f64 / num_detected.max(1) as f64;
+    let match_fraction_expected = num_matched as f64 / num_expected.max(1) as f64;
+    let coverage_score = 22.0 * match_fraction_detected + 34.0 * match_fraction_expected;
 
-    residual_score + count_score + fraction_score
+    // Bounded penalty for weak expected-star coverage.
+    let miss_penalty = -12.0 * (1.0 - match_fraction_expected).powf(1.3);
+
+    residual_score + count_score + coverage_score + miss_penalty
 }
 
 #[cfg(test)]

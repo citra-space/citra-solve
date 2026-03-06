@@ -165,6 +165,8 @@ fn main() -> ExitCode {
             println!("Rotation: {:.2}°", solution.rotation_deg);
             println!("Pixel scale: {:.3}\"/px", solution.pixel_scale_arcsec);
             println!("Matched stars: {}", solution.num_matched_stars);
+            println!("RMS: {:.1}\"", solution.rms_arcsec);
+            println!("Log-odds: {:.1}", solution.log_odds);
             println!("Solve time: {:?}", solve_time);
             println!("==============================\n");
 

@@ -7,7 +7,7 @@ use crate::catalog::Index;
 use crate::pattern::{generate_quads, PatternMatcher};
 use super::error::SolveError;
 use super::hypothesis::{generate_hypotheses, Hypothesis};
-use super::verify::{verify_hypothesis, VerifyConfig, VerifyResult};
+use super::verify::{verify_hypothesis_with_index, DetectedStarIndex, VerifyConfig, VerifyResult};
 use super::refine::{refine_solution, refine_linear_wcs, RefineConfig};
 use super::solution::Solution;
 
@@ -37,11 +37,11 @@ pub struct SolverConfig {
 impl Default for SolverConfig {
     fn default() -> Self {
         Self {
-            max_stars: 50,
-            max_quads: 10000,
-            max_matches: 1000,
-            bin_tolerance: 0.05,
-            ratio_tolerance: 0.05,
+            max_stars: 40,
+            max_quads: 3000,
+            max_matches: 300,
+            bin_tolerance: 0.04,
+            ratio_tolerance: 0.03,
             verify_config: VerifyConfig::default(),
             refine_config: RefineConfig::default(),
             timeout_ms: 30000, // 30 seconds
@@ -54,11 +54,13 @@ impl SolverConfig {
     /// Create a "fast" configuration that trades accuracy for speed.
     pub fn fast() -> Self {
         Self {
-            max_stars: 20,
-            max_quads: 50,
-            max_matches: 30,
+            max_stars: 24,
+            max_quads: 500,
+            max_matches: 80,
+            bin_tolerance: 0.035,
+            ratio_tolerance: 0.025,
             verify_config: VerifyConfig {
-                log_odds_threshold: 12.0,
+                log_odds_threshold: 18.0,
                 ..Default::default()
             },
             timeout_ms: 5000,
@@ -70,8 +72,8 @@ impl SolverConfig {
     pub fn thorough() -> Self {
         Self {
             max_stars: 100,
-            max_quads: 500,
-            max_matches: 200,
+            max_quads: 4000,
+            max_matches: 500,
             bin_tolerance: 0.03,
             ratio_tolerance: 0.015,
             verify_config: VerifyConfig {
@@ -119,6 +121,11 @@ impl<'a> Solver<'a> {
                 .partial_cmp(&a.flux)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        // Keep only the brightest stars for solving and verification.
+        // This suppresses cloud/noise detections that dominate lower-SNR tails.
+        if sorted_stars.len() > self.config.max_stars {
+            sorted_stars.truncate(self.config.max_stars);
+        }
 
         // Generate quads from detected stars
         let quads = generate_quads(
@@ -174,8 +181,18 @@ impl<'a> Solver<'a> {
         // Screening without refinement gives a fair ranking because correct
         // hypotheses naturally produce lower residuals than wrong ones.
         let mut candidates: Vec<VerifyResult> = Vec::new();
+        let verify_index = DetectedStarIndex::new(
+            &sorted_stars,
+            image_width,
+            image_height,
+            self.config.verify_config.max_match_distance_pixels,
+        );
 
-        for hypothesis in hypotheses {
+        let phase1_limit = (self.config.max_matches * 6).clamp(120, 1500);
+        let mut best_phase1_odds = f64::NEG_INFINITY;
+        let mut best_phase1_matches = 0usize;
+
+        for hypothesis in hypotheses.into_iter().take(phase1_limit) {
             // Check timeout
             if self.config.timeout_ms > 0
                 && start_time.elapsed().as_millis() > self.config.timeout_ms as u128
@@ -183,17 +200,29 @@ impl<'a> Solver<'a> {
                 break;
             }
 
-            let result = verify_hypothesis(
+            let result = verify_hypothesis_with_index(
                 &hypothesis,
                 &sorted_stars,
                 self.index,
                 image_width,
                 image_height,
                 &self.config.verify_config,
+                Some(&verify_index),
             );
 
             if result.num_matched >= 4 {
+                best_phase1_odds = best_phase1_odds.max(result.hypothesis.log_odds);
+                best_phase1_matches = best_phase1_matches.max(result.num_matched);
                 candidates.push(result);
+            }
+
+            // Strong early-hit heuristic: if we already have a high-confidence
+            // high-match candidate, stop spending time on tail hypotheses.
+            if candidates.len() >= 80
+                && best_phase1_odds >= self.config.verify_config.log_odds_threshold + 30.0
+                && best_phase1_matches >= 28
+            {
+                break;
             }
         }
 
@@ -201,13 +230,17 @@ impl<'a> Solver<'a> {
             return Err(SolveError::NoMatches);
         }
 
-        // Sort candidates by log_odds (descending) for phase 2
+        // Sort candidates by match count first, then confidence.
         candidates.sort_by(|a, b| {
-            b.hypothesis.log_odds
-                .partial_cmp(&a.hypothesis.log_odds)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.num_matched
+                .cmp(&a.num_matched)
+                .then_with(|| {
+                    b.hypothesis.log_odds
+                        .partial_cmp(&a.hypothesis.log_odds)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
-        candidates.truncate(50);
+        candidates.truncate(150);
 
         // Phase 2: Refine and tight-verify top candidates.
         //
@@ -215,10 +248,19 @@ impl<'a> Solver<'a> {
         // bootstrap more matches, then tight-verify to confirm. This ensures only
         // genuinely correct hypotheses pass the tight tolerance check.
         let tight_config = VerifyConfig {
-            position_sigma_pixels: 5.0,
-            max_match_distance_pixels: 20.0,
+            position_sigma_pixels: 2.5,
+            max_match_distance_pixels: 8.0,
             ..self.config.verify_config.clone()
         };
+        let (index_fov_min_deg, index_fov_max_deg) = self.index.fov_range_deg();
+        let min_allowed_fov = index_fov_min_deg as f64 * 0.7;
+        let max_allowed_fov = index_fov_max_deg as f64 * 1.08;
+        let tight_index = DetectedStarIndex::new(
+            &sorted_stars,
+            image_width,
+            image_height,
+            tight_config.max_match_distance_pixels,
+        );
 
         let mut best_tight: Option<VerifyResult> = None;
 
@@ -238,13 +280,14 @@ impl<'a> Solver<'a> {
                         linear_refined.wcs,
                         refined.hypothesis.pattern_distance,
                     );
-                    let refined_result = verify_hypothesis(
+                    let refined_result = verify_hypothesis_with_index(
                         &refined_hyp,
                         &sorted_stars,
                         self.index,
                         image_width,
                         image_height,
                         &self.config.verify_config,
+                        Some(&verify_index),
                     );
                     if refined_result.num_matched > refined.num_matched
                         || refined_result.hypothesis.log_odds > refined.hypothesis.log_odds
@@ -276,14 +319,42 @@ impl<'a> Solver<'a> {
                 wcs_for_tight,
                 refined.hypothesis.pattern_distance,
             );
-            let tight_result = verify_hypothesis(
+            let tight_result = verify_hypothesis_with_index(
                 &tight_hyp,
                 &sorted_stars,
                 self.index,
                 image_width,
                 image_height,
                 &tight_config,
+                Some(&tight_index),
             );
+
+            // Quality gate: reject weak/loose alignments that often come from
+            // cloud-induced false detections.
+            let match_fraction_detected =
+                tight_result.num_matched as f64 / sorted_stars.len().max(1) as f64;
+            let match_fraction_expected =
+                tight_result.num_matched as f64 / tight_result.num_expected.max(1) as f64;
+            if tight_result.num_matched < 7
+                || match_fraction_detected < 0.07
+                || match_fraction_expected < 0.10
+                || tight_result.rms_residual_pixels > 6.5
+            {
+                continue;
+            }
+
+            // Reject hypotheses whose implied field-of-view is far outside the
+            // index design range (common in false-positive pattern matches).
+            let tight_scale = tight_result.hypothesis.wcs.pixel_scale_arcsec();
+            let tight_fov_w = image_width as f64 * tight_scale / 3600.0;
+            let tight_fov_h = image_height as f64 * tight_scale / 3600.0;
+            if tight_fov_w < min_allowed_fov
+                || tight_fov_h < min_allowed_fov * 0.6
+                || tight_fov_w > max_allowed_fov
+                || tight_fov_h > max_allowed_fov
+            {
+                continue;
+            }
 
             if tight_result.hypothesis.log_odds >= tight_config.log_odds_threshold {
                 // Select by match count first (most robust discriminator),
@@ -365,6 +436,9 @@ impl<'a> Solver<'a> {
                 .partial_cmp(&a.flux)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        if sorted_stars.len() > self.config.max_stars {
+            sorted_stars.truncate(self.config.max_stars);
+        }
 
         if sorted_stars.len() < self.config.min_stars {
             return Err(SolveError::NotEnoughStars(self.config.min_stars, sorted_stars.len()));
@@ -401,15 +475,23 @@ impl<'a> Solver<'a> {
 
         progress("Verifying solutions", 0.7);
 
+        let verify_index = DetectedStarIndex::new(
+            &sorted_stars,
+            image_width,
+            image_height,
+            self.config.verify_config.max_match_distance_pixels,
+        );
+
         let mut best_result: Option<VerifyResult> = None;
         for hypothesis in hypotheses {
-            let result = verify_hypothesis(
+            let result = verify_hypothesis_with_index(
                 &hypothesis,
                 &sorted_stars,
                 self.index,
                 image_width,
                 image_height,
                 &self.config.verify_config,
+                Some(&verify_index),
             );
 
             if best_result.is_none()
