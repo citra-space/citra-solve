@@ -2,14 +2,14 @@
 
 use std::time::Instant;
 
-use crate::core::types::DetectedStar;
-use crate::catalog::Index;
-use crate::pattern::{generate_quads, PatternMatcher};
 use super::error::SolveError;
 use super::hypothesis::{generate_hypotheses, Hypothesis};
-use super::verify::{verify_hypothesis_with_index, DetectedStarIndex, VerifyConfig, VerifyResult};
-use super::refine::{refine_solution, refine_linear_wcs, RefineConfig};
+use super::refine::{refine_linear_wcs, refine_solution, RefineConfig};
 use super::solution::Solution;
+use super::verify::{verify_hypothesis_with_index, DetectedStarIndex, VerifyConfig, VerifyResult};
+use crate::catalog::Index;
+use crate::core::types::DetectedStar;
+use crate::pattern::{generate_quads, PatternMatcher};
 
 /// Configuration for the solver.
 #[derive(Debug, Clone)]
@@ -38,8 +38,8 @@ impl Default for SolverConfig {
     fn default() -> Self {
         Self {
             max_stars: 40,
-            max_quads: 3000,
-            max_matches: 300,
+            max_quads: 1800,
+            max_matches: 160,
             bin_tolerance: 0.04,
             ratio_tolerance: 0.03,
             verify_config: VerifyConfig::default(),
@@ -107,11 +107,29 @@ impl<'a> Solver<'a> {
         image_width: u32,
         image_height: u32,
     ) -> Result<Solution, SolveError> {
+        if stars.len() < self.config.min_stars {
+            return Err(SolveError::NotEnoughStars(
+                self.config.min_stars,
+                stars.len(),
+            ));
+        }
+        self.solve_single_window(stars, image_width, image_height)
+    }
+
+    fn solve_single_window(
+        &self,
+        stars: &[DetectedStar],
+        image_width: u32,
+        image_height: u32,
+    ) -> Result<Solution, SolveError> {
         let start_time = Instant::now();
 
         // Check minimum stars
         if stars.len() < self.config.min_stars {
-            return Err(SolveError::NotEnoughStars(self.config.min_stars, stars.len()));
+            return Err(SolveError::NotEnoughStars(
+                self.config.min_stars,
+                stars.len(),
+            ));
         }
 
         // Sort stars by brightness (create sorted copy)
@@ -128,11 +146,20 @@ impl<'a> Solver<'a> {
         }
 
         // Generate quads from detected stars
-        let quads = generate_quads(
+        let image_diagonal = ((image_width as f64).powi(2) + (image_height as f64).powi(2)).sqrt();
+        let min_edge_pixels = (image_diagonal * 0.05).max(8.0);
+        let max_edge_pixels = image_diagonal * 0.98;
+
+        let mut quads = crate::pattern::quad::generate_quads_brightness_priority(
             &sorted_stars,
             self.config.max_stars,
             self.config.max_quads,
+            min_edge_pixels,
+            max_edge_pixels,
         );
+        if quads.len() < (self.config.max_quads / 4).max(64) {
+            quads = generate_quads(&sorted_stars, self.config.max_stars, self.config.max_quads);
+        }
 
         if quads.is_empty() {
             return Err(SolveError::NotEnoughStars(4, sorted_stars.len()));
@@ -150,17 +177,14 @@ impl<'a> Solver<'a> {
             .with_bin_tolerance(self.config.bin_tolerance)
             .with_ratio_tolerance(self.config.ratio_tolerance);
 
-        let matches = matcher.find_matches_batch(&quads, 10);
+        let matches = matcher.find_matches_batch(&quads, 6);
 
         if matches.is_empty() {
             return Err(SolveError::NoMatches);
         }
 
         // Take top matches
-        let top_matches: Vec<_> = matches
-            .into_iter()
-            .take(self.config.max_matches)
-            .collect();
+        let top_matches: Vec<_> = matches.into_iter().take(self.config.max_matches).collect();
 
         // Generate hypotheses
         let hypotheses = generate_hypotheses(
@@ -188,7 +212,7 @@ impl<'a> Solver<'a> {
             self.config.verify_config.max_match_distance_pixels,
         );
 
-        let phase1_limit = (self.config.max_matches * 6).clamp(120, 1500);
+        let phase1_limit = (self.config.max_matches * 4).clamp(80, 900);
         let mut best_phase1_odds = f64::NEG_INFINITY;
         let mut best_phase1_matches = 0usize;
 
@@ -218,9 +242,9 @@ impl<'a> Solver<'a> {
 
             // Strong early-hit heuristic: if we already have a high-confidence
             // high-match candidate, stop spending time on tail hypotheses.
-            if candidates.len() >= 80
-                && best_phase1_odds >= self.config.verify_config.log_odds_threshold + 30.0
-                && best_phase1_matches >= 28
+            if candidates.len() >= 50
+                && best_phase1_odds >= self.config.verify_config.log_odds_threshold + 22.0
+                && best_phase1_matches >= 20
             {
                 break;
             }
@@ -232,15 +256,14 @@ impl<'a> Solver<'a> {
 
         // Sort candidates by match count first, then confidence.
         candidates.sort_by(|a, b| {
-            b.num_matched
-                .cmp(&a.num_matched)
-                .then_with(|| {
-                    b.hypothesis.log_odds
-                        .partial_cmp(&a.hypothesis.log_odds)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            b.num_matched.cmp(&a.num_matched).then_with(|| {
+                b.hypothesis
+                    .log_odds
+                    .partial_cmp(&a.hypothesis.log_odds)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
-        candidates.truncate(150);
+        candidates.truncate(100);
 
         // Phase 2: Refine and tight-verify top candidates.
         //
@@ -263,6 +286,15 @@ impl<'a> Solver<'a> {
         );
 
         let mut best_tight: Option<VerifyResult> = None;
+        let mut best_relaxed: Option<VerifyResult> = None;
+        let strict_min_matches = 7usize;
+        let strict_min_detected_frac = 0.07;
+        let strict_min_expected_frac = 0.10;
+        let strict_max_rms_px = 6.5;
+        let relaxed_min_matches = 6usize;
+        let relaxed_min_detected_frac = 0.05;
+        let relaxed_min_expected_frac = 0.07;
+        let relaxed_max_rms_px = 8.5;
 
         for candidate in &candidates {
             // Iterative refine-verify with wide tolerance to improve WCS
@@ -329,19 +361,10 @@ impl<'a> Solver<'a> {
                 Some(&tight_index),
             );
 
-            // Quality gate: reject weak/loose alignments that often come from
-            // cloud-induced false detections.
             let match_fraction_detected =
                 tight_result.num_matched as f64 / sorted_stars.len().max(1) as f64;
             let match_fraction_expected =
                 tight_result.num_matched as f64 / tight_result.num_expected.max(1) as f64;
-            if tight_result.num_matched < 7
-                || match_fraction_detected < 0.07
-                || match_fraction_expected < 0.10
-                || tight_result.rms_residual_pixels > 6.5
-            {
-                continue;
-            }
 
             // Reject hypotheses whose implied field-of-view is far outside the
             // index design range (common in false-positive pattern matches).
@@ -356,7 +379,16 @@ impl<'a> Solver<'a> {
                 continue;
             }
 
-            if tight_result.hypothesis.log_odds >= tight_config.log_odds_threshold {
+            let strict_ok = tight_result.num_matched >= strict_min_matches
+                && match_fraction_detected >= strict_min_detected_frac
+                && match_fraction_expected >= strict_min_expected_frac
+                && tight_result.rms_residual_pixels <= strict_max_rms_px;
+            let relaxed_ok = tight_result.num_matched >= relaxed_min_matches
+                && match_fraction_detected >= relaxed_min_detected_frac
+                && match_fraction_expected >= relaxed_min_expected_frac
+                && tight_result.rms_residual_pixels <= relaxed_max_rms_px;
+
+            if strict_ok && tight_result.hypothesis.log_odds >= tight_config.log_odds_threshold {
                 // Select by match count first (most robust discriminator),
                 // then by log_odds as tiebreaker.
                 let dominated = best_tight.as_ref().map_or(true, |best| {
@@ -367,10 +399,21 @@ impl<'a> Solver<'a> {
                 if dominated {
                     best_tight = Some(tight_result);
                 }
+            } else if relaxed_ok
+                && tight_result.hypothesis.log_odds >= tight_config.log_odds_threshold - 4.0
+            {
+                let dominated = best_relaxed.as_ref().map_or(true, |best| {
+                    tight_result.num_matched > best.num_matched
+                        || (tight_result.num_matched == best.num_matched
+                            && tight_result.hypothesis.log_odds > best.hypothesis.log_odds)
+                });
+                if dominated {
+                    best_relaxed = Some(tight_result);
+                }
             }
         }
 
-        let best_result = best_tight.ok_or_else(|| {
+        let best_result = best_tight.or(best_relaxed).ok_or_else(|| {
             // Report the best candidate's tight log_odds for debugging
             let best_candidate_odds = candidates
                 .first()
@@ -413,6 +456,13 @@ impl<'a> Solver<'a> {
             final_matches,
         );
 
+        // Final sanity guard against low-quality false locks.
+        if solution.rms_arcsec > 600.0 {
+            return Err(SolveError::VerificationFailed(
+                best_result.hypothesis.log_odds,
+            ));
+        }
+
         Ok(solution)
     }
 
@@ -441,14 +491,13 @@ impl<'a> Solver<'a> {
         }
 
         if sorted_stars.len() < self.config.min_stars {
-            return Err(SolveError::NotEnoughStars(self.config.min_stars, sorted_stars.len()));
+            return Err(SolveError::NotEnoughStars(
+                self.config.min_stars,
+                sorted_stars.len(),
+            ));
         }
 
-        let quads = generate_quads(
-            &sorted_stars,
-            self.config.max_stars,
-            self.config.max_quads,
-        );
+        let quads = generate_quads(&sorted_stars, self.config.max_stars, self.config.max_quads);
 
         progress("Matching patterns", 0.3);
 
@@ -456,7 +505,7 @@ impl<'a> Solver<'a> {
             .with_bin_tolerance(self.config.bin_tolerance)
             .with_ratio_tolerance(self.config.ratio_tolerance);
 
-        let matches = matcher.find_matches_batch(&quads, 10);
+        let matches = matcher.find_matches_batch(&quads, 6);
 
         if matches.is_empty() {
             return Err(SolveError::NoMatches);
@@ -467,7 +516,10 @@ impl<'a> Solver<'a> {
         let hypotheses = generate_hypotheses(
             &sorted_stars,
             &quads,
-            &matches.into_iter().take(self.config.max_matches).collect::<Vec<_>>(),
+            &matches
+                .into_iter()
+                .take(self.config.max_matches)
+                .collect::<Vec<_>>(),
             self.index,
             image_width,
             image_height,
@@ -504,7 +556,9 @@ impl<'a> Solver<'a> {
         let best_result = best_result.ok_or(SolveError::NoMatches)?;
 
         if best_result.hypothesis.log_odds < self.config.verify_config.log_odds_threshold {
-            return Err(SolveError::VerificationFailed(best_result.hypothesis.log_odds));
+            return Err(SolveError::VerificationFailed(
+                best_result.hypothesis.log_odds,
+            ));
         }
 
         progress("Refining solution", 0.9);

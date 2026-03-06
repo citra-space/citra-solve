@@ -1,17 +1,17 @@
 //! Index builder for creating pattern databases from star catalogs.
 
 use std::collections::HashMap;
-use std::io::{Write, BufWriter};
 use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use bytemuck::bytes_of;
 
-use crate::core::types::{RaDec, Vec3};
-use crate::core::math::angular_separation;
-use super::index::{IndexHeader, INDEX_MAGIC, INDEX_VERSION};
-use super::star::{PackedStar, PackedPattern};
 use super::error::CatalogError;
+use super::index::{IndexHeader, INDEX_MAGIC, INDEX_VERSION};
+use super::star::{PackedPattern, PackedStar};
+use crate::core::math::angular_separation;
+use crate::core::types::{RaDec, Vec3};
 
 /// Configuration for building an index.
 #[derive(Debug, Clone)]
@@ -38,7 +38,9 @@ impl Default for BuildConfig {
             mag_limit: 7.0,
             num_bins: 1_000_000, // 1M bins
             max_stars: 5000,
-            max_patterns_per_star: 100,
+            // Higher default dramatically improves solve recall on real imagery
+            // by preserving enough quad diversity per anchor star.
+            max_patterns_per_star: 5000,
         }
     }
 }
@@ -182,8 +184,13 @@ impl IndexBuilder {
                 let mut ki = ji + 1;
                 while ki < ni_len {
                     let k = ni[ki];
-                    if k <= j { ki += k_stride; continue; }
-                    if patterns_per_star[i] >= self.config.max_patterns_per_star || pair_count >= max_per_pair {
+                    if k <= j {
+                        ki += k_stride;
+                        continue;
+                    }
+                    if patterns_per_star[i] >= self.config.max_patterns_per_star
+                        || pair_count >= max_per_pair
+                    {
                         break;
                     }
 
@@ -200,8 +207,13 @@ impl IndexBuilder {
                     let mut li = ki + 1;
                     while li < ni_len {
                         let l = ni[li];
-                        if l <= k { li += l_stride; continue; }
-                        if patterns_per_star[i] >= self.config.max_patterns_per_star || pair_count >= max_per_pair {
+                        if l <= k {
+                            li += l_stride;
+                            continue;
+                        }
+                        if patterns_per_star[i] >= self.config.max_patterns_per_star
+                            || pair_count >= max_per_pair
+                        {
                             break;
                         }
 
@@ -227,10 +239,14 @@ impl IndexBuilder {
                             let proj_k = unit_vectors[k].gnomonic_project(&centroid);
                             let proj_l = unit_vectors[l].gnomonic_project(&centroid);
 
-                            let (proj_i, proj_j, proj_k, proj_l) = match (proj_i, proj_j, proj_k, proj_l) {
-                                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
-                                _ => { li += l_stride; continue; },
-                            };
+                            let (proj_i, proj_j, proj_k, proj_l) =
+                                match (proj_i, proj_j, proj_k, proj_l) {
+                                    (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                                    _ => {
+                                        li += l_stride;
+                                        continue;
+                                    }
+                                };
 
                             let tp_dist = |a: (f64, f64), b: (f64, f64)| -> f64 {
                                 ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
@@ -252,8 +268,11 @@ impl IndexBuilder {
                             distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
                             let ratios: [f64; 5] = [
-                                distances[0], distances[1], distances[2],
-                                distances[3], distances[4],
+                                distances[0],
+                                distances[1],
+                                distances[2],
+                                distances[3],
+                                distances[4],
                             ];
 
                             let hash_bin = compute_hash(&ratios, self.config.num_bins);
@@ -279,7 +298,11 @@ impl IndexBuilder {
             } // end j loop
         } // end i loop
 
-        println!("Generated {} patterns in {} bins", total_patterns, bins.len());
+        println!(
+            "Generated {} patterns in {} bins",
+            total_patterns,
+            bins.len()
+        );
 
         // Write index file
         let file = File::create(output_path)?;

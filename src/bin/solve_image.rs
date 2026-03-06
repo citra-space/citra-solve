@@ -108,7 +108,11 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    println!("  {} stars, {} patterns", index.num_stars(), index.num_patterns());
+    println!(
+        "  {} stars, {} patterns",
+        index.num_stars(),
+        index.num_patterns()
+    );
 
     // Extract stars from image
     println!("\nExtracting stars...");
@@ -126,12 +130,21 @@ fn main() -> ExitCode {
     if verbose {
         println!("\n  Top 10 brightest stars:");
         for (i, star) in stars.iter().take(10).enumerate() {
-            println!("    {}: ({:.1}, {:.1}) flux={:.0}", i + 1, star.x, star.y, star.flux);
+            println!(
+                "    {}: ({:.1}, {:.1}) flux={:.0}",
+                i + 1,
+                star.x,
+                star.y,
+                star.flux
+            );
         }
     }
 
     if stars.len() < 4 {
-        eprintln!("\nError: Need at least 4 stars to solve, found {}", stars.len());
+        eprintln!(
+            "\nError: Need at least 4 stars to solve, found {}",
+            stars.len()
+        );
         return ExitCode::from(1);
     }
 
@@ -155,13 +168,16 @@ fn main() -> ExitCode {
     match result {
         Ok(solution) => {
             println!("\n========== SOLUTION ==========");
-            println!("Center: RA = {:.6}° ({:.4}h), Dec = {:.6}°",
+            println!(
+                "Center: RA = {:.6}° ({:.4}h), Dec = {:.6}°",
                 solution.center.ra_deg(),
                 solution.center.ra_deg() / 15.0,
-                solution.center.dec_deg());
-            println!("Field of view: {:.3}° x {:.3}°",
-                solution.fov_width_deg,
-                solution.fov_height_deg);
+                solution.center.dec_deg()
+            );
+            println!(
+                "Field of view: {:.3}° x {:.3}°",
+                solution.fov_width_deg, solution.fov_height_deg
+            );
             println!("Rotation: {:.2}°", solution.rotation_deg);
             println!("Pixel scale: {:.3}\"/px", solution.pixel_scale_arcsec);
             println!("Matched stars: {}", solution.num_matched_stars);
@@ -202,7 +218,7 @@ fn print_usage() {
     println!("  -i, --image <FILE>    Input image file (JPEG, PNG)");
     println!("  -x, --index <FILE>    Star pattern index [default: hipparcos.idx]");
     println!("  --sigma <N>           Detection threshold in sigma [default: 5.0]");
-    println!("  --max-stars <N>       Maximum stars to use [default: 100]");
+    println!("  --max-stars <N>       Maximum stars to use [default: 40]");
     println!("  --tolerance <T>       Pattern matching tolerance [default: 0.05]");
     println!("  -v, --verbose         Show detailed output");
     println!("  -h, --help            Show this help message");

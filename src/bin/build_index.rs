@@ -76,7 +76,8 @@ fn main() -> ExitCode {
             "--patterns-per-star" => {
                 i += 1;
                 if i < args.len() {
-                    config.max_patterns_per_star = args[i].parse().unwrap_or(config.max_patterns_per_star);
+                    config.max_patterns_per_star =
+                        args[i].parse().unwrap_or(config.max_patterns_per_star);
                 }
             }
             "--synthetic" => {
@@ -106,7 +107,10 @@ fn main() -> ExitCode {
     println!("=======================");
     println!("Catalog: {}", catalog_path.display());
     println!("Output:  {}", output_path.display());
-    println!("FOV:     {:.1}° - {:.1}°", config.fov_min_deg, config.fov_max_deg);
+    println!(
+        "FOV:     {:.1}° - {:.1}°",
+        config.fov_min_deg, config.fov_max_deg
+    );
     println!("Mag limit: {:.1}", config.mag_limit);
     println!();
 
@@ -135,7 +139,7 @@ fn print_usage() {
     println!("  --fov-max <DEG>         Maximum FOV in degrees [default: 30.0]");
     println!("  --mag-limit <MAG>       Magnitude limit [default: 7.0]");
     println!("  --max-stars <N>         Max stars for pattern generation [default: 5000]");
-    println!("  --patterns-per-star <N> Max patterns per star [default: 100]");
+    println!("  --patterns-per-star <N> Max patterns per star [default: 5000]");
     println!("  --synthetic             Generate synthetic test catalog");
     println!("  -h, --help              Show this help message");
     println!();
@@ -144,14 +148,21 @@ fn print_usage() {
     println!("  CSV: RA(deg),Dec(deg),Mag,ID");
 }
 
-fn build_index(catalog_path: &PathBuf, output_path: &PathBuf, config: BuildConfig) -> Result<(), String> {
+fn build_index(
+    catalog_path: &PathBuf,
+    output_path: &PathBuf,
+    config: BuildConfig,
+) -> Result<(), String> {
     let mut builder = IndexBuilder::new(config);
 
     // Detect catalog format and parse
     let file = File::open(catalog_path).map_err(|e| format!("Failed to open catalog: {}", e))?;
     let reader = BufReader::new(file);
 
-    let extension = catalog_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let extension = catalog_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
 
     let stars_added = if extension == "csv" {
         parse_csv_catalog(reader, &mut builder)?
@@ -167,7 +178,9 @@ fn build_index(catalog_path: &PathBuf, output_path: &PathBuf, config: BuildConfi
     }
 
     // Build the index
-    let stats = builder.build(output_path).map_err(|e| format!("Build failed: {}", e))?;
+    let stats = builder
+        .build(output_path)
+        .map_err(|e| format!("Build failed: {}", e))?;
 
     println!("\nBuild Statistics:");
     println!("  Stars in index: {}", stats.num_stars);
@@ -178,7 +191,10 @@ fn build_index(catalog_path: &PathBuf, output_path: &PathBuf, config: BuildConfi
     Ok(())
 }
 
-fn parse_hipparcos_catalog<R: BufRead>(reader: R, builder: &mut IndexBuilder) -> Result<usize, String> {
+fn parse_hipparcos_catalog<R: BufRead>(
+    reader: R,
+    builder: &mut IndexBuilder,
+) -> Result<usize, String> {
     let mut count = 0;
 
     for (line_num, line_result) in reader.lines().enumerate() {

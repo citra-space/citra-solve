@@ -1,7 +1,7 @@
 //! Centroid extraction for star detection.
 
 use crate::core::types::DetectedStar;
-use image::{DynamicImage, GenericImageView, Luma};
+use image::DynamicImage;
 use std::path::Path;
 
 /// Configuration for star extraction.
@@ -25,6 +25,8 @@ pub struct ExtractionConfig {
     pub max_rms_radius: f64,
     /// Maximum spot eccentricity (0=circular, 1=line-like).
     pub max_eccentricity: f64,
+    /// Minimum normalized peak sharpness relative to local contrast.
+    pub min_peak_sharpness: f64,
 }
 
 impl Default for ExtractionConfig {
@@ -39,6 +41,7 @@ impl Default for ExtractionConfig {
             min_rms_radius: 0.6,
             max_rms_radius: 3.8,
             max_eccentricity: 0.9,
+            min_peak_sharpness: 0.12,
         }
     }
 }
@@ -107,6 +110,10 @@ pub fn extract_stars_from_image(
                 if contrast < config.min_peak_contrast {
                     continue;
                 }
+                let sharpness = local_peak_sharpness(&gray, x, y, val, local_bg);
+                if sharpness < config.min_peak_sharpness {
+                    continue;
+                }
                 candidates.push((x, y, val, contrast));
             }
         }
@@ -165,14 +172,25 @@ pub fn extract_stars_from_image(
     Ok(stars)
 }
 
+/// Compute a normalized peak sharpness score in [~0, 1+].
+///
+/// Broad cloud structures tend to have low sharpness while true star peaks
+/// usually stand out from their immediate 4-neighborhood.
+fn local_peak_sharpness(img: &image::GrayImage, x: u32, y: u32, peak: f64, local_bg: f64) -> f64 {
+    if x == 0 || y == 0 || x + 1 >= img.width() || y + 1 >= img.height() {
+        return 0.0;
+    }
+    let n1 = img.get_pixel(x - 1, y).0[0] as f64;
+    let n2 = img.get_pixel(x + 1, y).0[0] as f64;
+    let n3 = img.get_pixel(x, y - 1).0[0] as f64;
+    let n4 = img.get_pixel(x, y + 1).0[0] as f64;
+    let neighbors_mean = (n1 + n2 + n3 + n4) * 0.25;
+    let denom = (peak - local_bg).max(1.0);
+    ((peak - neighbors_mean) / denom).max(0.0)
+}
+
 /// Compute local annulus mean around (cx, cy).
-fn local_annulus_mean(
-    img: &image::GrayImage,
-    cx: i32,
-    cy: i32,
-    r_in: i32,
-    r_out: i32,
-) -> f64 {
+fn local_annulus_mean(img: &image::GrayImage, cx: i32, cy: i32, r_in: i32, r_out: i32) -> f64 {
     let mut sum = 0.0;
     let mut count = 0usize;
     let r_in2 = (r_in * r_in) as i64;
@@ -341,5 +359,6 @@ mod tests {
         assert_eq!(config.min_rms_radius, 0.6);
         assert_eq!(config.max_rms_radius, 3.8);
         assert_eq!(config.max_eccentricity, 0.9);
+        assert_eq!(config.min_peak_sharpness, 0.12);
     }
 }
