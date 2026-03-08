@@ -1,9 +1,9 @@
 //! Synthetic star field generation for testing.
 
-use crate::core::types::{RaDec, Vec3, DetectedStar};
-use crate::core::math;
-use crate::wcs::Wcs;
 use crate::catalog::Index;
+use crate::core::math;
+use crate::core::types::{DetectedStar, RaDec, Vec3};
+use crate::wcs::Wcs;
 
 use std::f64::consts::PI;
 
@@ -243,7 +243,14 @@ pub fn generate_test_suite(
             seed: config.seed.wrapping_add(i as u64),
             ..*config
         };
-        fields.push(generate_field(index, center, fov_deg, width, height, &field_config));
+        fields.push(generate_field(
+            index,
+            center,
+            fov_deg,
+            width,
+            height,
+            &field_config,
+        ));
     }
 
     fields

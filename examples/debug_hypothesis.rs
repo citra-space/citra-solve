@@ -1,17 +1,37 @@
 //! Debug hypothesis generation for the correct pattern match.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
 use citra_solve::pattern::generate_quads;
 use citra_solve::wcs::Wcs;
 
 const PERMUTATIONS_4: [[usize; 4]; 24] = [
-    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
-    [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2], [1, 3, 2, 0],
-    [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0], [2, 3, 0, 1], [2, 3, 1, 0],
-    [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2], [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
+    [0, 1, 2, 3],
+    [0, 1, 3, 2],
+    [0, 2, 1, 3],
+    [0, 2, 3, 1],
+    [0, 3, 1, 2],
+    [0, 3, 2, 1],
+    [1, 0, 2, 3],
+    [1, 0, 3, 2],
+    [1, 2, 0, 3],
+    [1, 2, 3, 0],
+    [1, 3, 0, 2],
+    [1, 3, 2, 0],
+    [2, 0, 1, 3],
+    [2, 0, 3, 1],
+    [2, 1, 0, 3],
+    [2, 1, 3, 0],
+    [2, 3, 0, 1],
+    [2, 3, 1, 0],
+    [3, 0, 1, 2],
+    [3, 0, 2, 1],
+    [3, 1, 0, 2],
+    [3, 1, 2, 0],
+    [3, 2, 0, 1],
+    [3, 2, 1, 0],
 ];
 
 fn main() {
@@ -58,8 +78,14 @@ fn main() {
     println!("Catalog stars [51, 376, 306, 272]:");
     for (idx, cat) in cat_indices.iter().zip(&cat_stars) {
         let (px, py) = true_wcs.sky_to_pixel(&cat.position);
-        println!("  Cat {}: sky=({:.4}°, {:.4}°) -> pixel=({:.1}, {:.1})",
-            idx, cat.position.ra_deg(), cat.position.dec_deg(), px, py);
+        println!(
+            "  Cat {}: sky=({:.4}°, {:.4}°) -> pixel=({:.1}, {:.1})",
+            idx,
+            cat.position.ra_deg(),
+            cat.position.dec_deg(),
+            px,
+            py
+        );
     }
     println!();
 
@@ -89,7 +115,7 @@ fn main() {
                 let (pred_x, pred_y) = wcs.sky_to_pixel(&cat.position);
                 let dx = stars[*det_idx].x - pred_x;
                 let dy = stars[*det_idx].y - pred_y;
-                sum_sq += dx*dx + dy*dy;
+                sum_sq += dx * dx + dy * dy;
             }
             let rms = (sum_sq / matches.len() as f64).sqrt();
 
@@ -105,8 +131,10 @@ fn main() {
                 println!("    Matches:");
                 for (det_idx, cat) in &matches {
                     let (pred_x, pred_y) = wcs.sky_to_pixel(&cat.position);
-                    println!("      Det {} ({:.1},{:.1}) -> Cat {} pred ({:.1},{:.1})",
-                        det_idx, stars[*det_idx].x, stars[*det_idx].y, cat.id, pred_x, pred_y);
+                    println!(
+                        "      Det {} ({:.1},{:.1}) -> Cat {} pred ({:.1},{:.1})",
+                        det_idx, stars[*det_idx].x, stars[*det_idx].y, cat.id, pred_x, pred_y
+                    );
                 }
             }
         }

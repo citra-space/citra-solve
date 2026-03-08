@@ -49,8 +49,10 @@ fn main() {
 
     // For each catalog star, find nearest detected star
     println!("Catalog stars (brightest first) and nearest detection:");
-    println!("{:>6} {:>8} {:>8} {:>4}  {:>8} {:>8} {:>6} {:>8}",
-        "Cat", "Cat_X", "Cat_Y", "Mag", "Det_X", "Det_Y", "Dist", "Status");
+    println!(
+        "{:>6} {:>8} {:>8} {:>4}  {:>8} {:>8} {:>6} {:>8}",
+        "Cat", "Cat_X", "Cat_Y", "Mag", "Det_X", "Det_Y", "Dist", "Status"
+    );
     println!("{}", "-".repeat(75));
 
     let mut matched = 0;
@@ -84,19 +86,29 @@ fn main() {
         };
 
         if let Some((dx, dy)) = best_det {
-            println!("{:>6} {:>8.1} {:>8.1} {:>4.1}  {:>8.1} {:>8.1} {:>6.1} {:>8}",
-                idx, cx, cy, mag, dx, dy, best_dist, status);
+            println!(
+                "{:>6} {:>8.1} {:>8.1} {:>4.1}  {:>8.1} {:>8.1} {:>6.1} {:>8}",
+                idx, cx, cy, mag, dx, dy, best_dist, status
+            );
         } else {
-            println!("{:>6} {:>8.1} {:>8.1} {:>4.1}  {:>8} {:>8} {:>6} {:>8}",
-                idx, cx, cy, mag, "-", "-", "-", "MISS");
+            println!(
+                "{:>6} {:>8.1} {:>8.1} {:>4.1}  {:>8} {:>8} {:>6} {:>8}",
+                idx, cx, cy, mag, "-", "-", "-", "MISS"
+            );
         }
     }
 
-    println!("\nMatched: {} of {} (threshold: 15 pixels)", matched, 30.min(cat_in_fov.len()));
+    println!(
+        "\nMatched: {} of {} (threshold: 15 pixels)",
+        matched,
+        30.min(cat_in_fov.len())
+    );
     if matched > 0 {
-        println!("Average error: {:.2} pixels ({:.1}\")",
+        println!(
+            "Average error: {:.2} pixels ({:.1}\")",
             total_err / matched as f64,
-            total_err / matched as f64 * pixel_scale);
+            total_err / matched as f64 * pixel_scale
+        );
     }
 
     // Now show detected stars that DON'T match any catalog star
@@ -116,10 +128,16 @@ fn main() {
         if nearest_dist > 20.0 {
             unmatched += 1;
             if unmatched <= 20 {
-                println!("  Det {:2}: ({:6.1},{:6.1}) flux={:5.0}  nearest_cat={:.0}px",
-                    i, star.x, star.y, star.flux, nearest_dist);
+                println!(
+                    "  Det {:2}: ({:6.1},{:6.1}) flux={:5.0}  nearest_cat={:.0}px",
+                    i, star.x, star.y, star.flux, nearest_dist
+                );
             }
         }
     }
-    println!("Total unmatched detections: {} of {}", unmatched, stars.len());
+    println!(
+        "Total unmatched detections: {} of {}",
+        unmatched,
+        stars.len()
+    );
 }

@@ -1,8 +1,8 @@
 //! Check if the index covers a specific sky region.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 
 fn main() {
     let index_path = "hipparcos.idx";
@@ -42,7 +42,7 @@ fn main() {
     } else {
         println!("\nBrightest 20 stars in FOV:");
         for (i, (idx, mag, sep)) in stars_in_fov.iter().take(20).enumerate() {
-            println!("  {}: star {} mag={:.1} sep={:.1}°", i+1, idx, mag, sep);
+            println!("  {}: star {} mag={:.1} sep={:.1}°", i + 1, idx, mag, sep);
         }
     }
 

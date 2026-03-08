@@ -21,8 +21,7 @@ pub fn haversine_distance(a: &RaDec, b: &RaDec) -> f64 {
     let d_ra = b.ra - a.ra;
     let d_dec = b.dec - a.dec;
 
-    let h = (d_dec / 2.0).sin().powi(2)
-        + a.dec.cos() * b.dec.cos() * (d_ra / 2.0).sin().powi(2);
+    let h = (d_dec / 2.0).sin().powi(2) + a.dec.cos() * b.dec.cos() * (d_ra / 2.0).sin().powi(2);
 
     2.0 * h.sqrt().asin()
 }
@@ -68,7 +67,9 @@ pub fn spherical_centroid(points: &[Vec3]) -> Vec3 {
     if points.is_empty() {
         return Vec3::default();
     }
-    let sum = points.iter().fold(Vec3::new(0.0, 0.0, 0.0), |acc, p| acc + *p);
+    let sum = points
+        .iter()
+        .fold(Vec3::new(0.0, 0.0, 0.0), |acc, p| acc + *p);
     sum.normalize()
 }
 
@@ -110,16 +111,8 @@ pub fn euler_to_matrix(phi: f64, theta: f64, psi: f64) -> [[f64; 3]; 3] {
     let (s3, c3) = psi.sin_cos();
 
     [
-        [
-            c1 * c2 * c3 - s1 * s3,
-            -c1 * c2 * s3 - s1 * c3,
-            c1 * s2,
-        ],
-        [
-            s1 * c2 * c3 + c1 * s3,
-            -s1 * c2 * s3 + c1 * c3,
-            s1 * s2,
-        ],
+        [c1 * c2 * c3 - s1 * s3, -c1 * c2 * s3 - s1 * c3, c1 * s2],
+        [s1 * c2 * c3 + c1 * s3, -s1 * c2 * s3 + c1 * c3, s1 * s2],
         [-s2 * c3, s2 * s3, c2],
     ]
 }

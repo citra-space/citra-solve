@@ -6,11 +6,11 @@
 //! 3. Attempts to solve it
 //! 4. Reports accuracy metrics
 
+use citra_solve::bench::synthetic::{generate_field, SyntheticConfig};
 use citra_solve::catalog::builder::{BuildConfig, IndexBuilder};
 use citra_solve::catalog::Index;
-use citra_solve::bench::synthetic::{generate_field, SyntheticConfig};
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation_arcsec;
+use citra_solve::core::types::RaDec;
 use citra_solve::solver::{Solver, SolverConfig};
 
 use std::time::Instant;
@@ -56,14 +56,19 @@ fn main() {
     let stats = builder.build(index_path).expect("Failed to build index");
     let build_time = build_start.elapsed();
 
-    println!("  Built index with {} stars, {} patterns in {:?}",
-        stats.num_stars, stats.num_patterns, build_time);
+    println!(
+        "  Built index with {} stars, {} patterns in {:?}",
+        stats.num_stars, stats.num_patterns, build_time
+    );
 
     // Step 2: Load the index
     println!("\nStep 2: Loading index...");
     let index = Index::open(index_path).expect("Failed to open index");
-    println!("  Loaded index: {} stars, {} patterns",
-        index.num_stars(), index.num_patterns());
+    println!(
+        "  Loaded index: {} stars, {} patterns",
+        index.num_stars(),
+        index.num_patterns()
+    );
 
     // Step 3: Generate synthetic test fields and solve them
     println!("\nStep 3: Testing plate solver...\n");
@@ -77,24 +82,36 @@ fn main() {
 
     let test_cases = [
         ("Clean field", SyntheticConfig::default()),
-        ("Noisy field", SyntheticConfig {
-            position_noise_pixels: 1.0,
-            ..Default::default()
-        }),
-        ("Missing stars", SyntheticConfig {
-            missing_star_rate: 0.2,
-            ..Default::default()
-        }),
-        ("False stars", SyntheticConfig {
-            false_star_count: 10,
-            ..Default::default()
-        }),
-        ("Challenging", SyntheticConfig {
-            position_noise_pixels: 1.5,
-            missing_star_rate: 0.15,
-            false_star_count: 5,
-            ..Default::default()
-        }),
+        (
+            "Noisy field",
+            SyntheticConfig {
+                position_noise_pixels: 1.0,
+                ..Default::default()
+            },
+        ),
+        (
+            "Missing stars",
+            SyntheticConfig {
+                missing_star_rate: 0.2,
+                ..Default::default()
+            },
+        ),
+        (
+            "False stars",
+            SyntheticConfig {
+                false_star_count: 10,
+                ..Default::default()
+            },
+        ),
+        (
+            "Challenging",
+            SyntheticConfig {
+                position_noise_pixels: 1.5,
+                missing_star_rate: 0.15,
+                false_star_count: 5,
+                ..Default::default()
+            },
+        ),
     ];
 
     let mut total_solved = 0;
@@ -132,8 +149,11 @@ fn main() {
             );
 
             if field.detected_stars.len() < 4 {
-                println!("    Trial {}: Skipped (only {} stars visible)",
-                    trial + 1, field.detected_stars.len());
+                println!(
+                    "    Trial {}: Skipped (only {} stars visible)",
+                    trial + 1,
+                    field.detected_stars.len()
+                );
                 continue;
             }
 
@@ -145,8 +165,13 @@ fn main() {
             match result {
                 Ok(solution) => {
                     let error = angular_separation_arcsec(&field.center, &solution.center);
-                    println!("    Trial {}: SOLVED in {:?}, error={:.1}\", {} matched",
-                        trial + 1, solve_time, error, solution.num_matched_stars);
+                    println!(
+                        "    Trial {}: SOLVED in {:?}, error={:.1}\", {} matched",
+                        trial + 1,
+                        solve_time,
+                        error,
+                        solution.num_matched_stars
+                    );
                     solved += 1;
                 }
                 Err(e) => {
@@ -164,9 +189,12 @@ fn main() {
     println!("===========================================");
     println!("  SUMMARY");
     println!("===========================================");
-    println!("  Total solve rate: {}/{} ({:.1}%)",
-        total_solved, total_tests,
-        100.0 * total_solved as f64 / total_tests as f64);
+    println!(
+        "  Total solve rate: {}/{} ({:.1}%)",
+        total_solved,
+        total_tests,
+        100.0 * total_solved as f64 / total_tests as f64
+    );
     println!("===========================================\n");
 
     // Cleanup

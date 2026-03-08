@@ -1,12 +1,12 @@
 //! Index file format and memory-mapped reader.
 
-use std::path::Path;
-use std::fs::File;
+use bytemuck::{cast_slice, from_bytes, Pod, Zeroable};
 use memmap2::Mmap;
-use bytemuck::{Pod, Zeroable, from_bytes, cast_slice};
+use std::fs::File;
+use std::path::Path;
 
 use super::error::CatalogError;
-use super::star::{PackedStar, PackedPattern};
+use super::star::{PackedPattern, PackedStar};
 use crate::core::types::CatalogStar;
 
 /// Magic number for index files: "CHAM"
@@ -87,6 +87,8 @@ impl IndexHeader {
 pub struct Index {
     /// Memory-mapped file data.
     _mmap: Mmap,
+    /// Size of the mapped index file in bytes.
+    mapped_len_bytes: usize,
     /// Parsed header.
     header: IndexHeader,
     /// Slice of packed stars.
@@ -144,6 +146,7 @@ impl Index {
         };
 
         Ok(Self {
+            mapped_len_bytes: mmap.len(),
             _mmap: mmap,
             header,
             stars,
@@ -181,7 +184,10 @@ impl Index {
     pub fn get_star(&self, idx: u32) -> Result<&PackedStar, CatalogError> {
         self.stars
             .get(idx as usize)
-            .ok_or(CatalogError::StarIndexOutOfBounds(idx, self.header.num_stars))
+            .ok_or(CatalogError::StarIndexOutOfBounds(
+                idx,
+                self.header.num_stars,
+            ))
     }
 
     /// Get a star as CatalogStar.
@@ -227,6 +233,12 @@ impl Index {
     pub fn all_stars(&self) -> &[PackedStar] {
         self.stars
     }
+
+    /// Get mapped index file size in bytes.
+    #[inline]
+    pub fn mapped_len_bytes(&self) -> usize {
+        self.mapped_len_bytes
+    }
 }
 
 // Index is Send + Sync because mmap data is immutable
@@ -250,7 +262,10 @@ mod tests {
 
         let mut invalid = valid;
         invalid.magic = *b"XXXX";
-        assert!(matches!(invalid.validate(), Err(CatalogError::InvalidMagic)));
+        assert!(matches!(
+            invalid.validate(),
+            Err(CatalogError::InvalidMagic)
+        ));
 
         let mut invalid = valid;
         invalid.version = 99;

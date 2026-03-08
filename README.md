@@ -4,7 +4,7 @@ Efficient lost-in-space astrometric plate solver for embedded systems.
 
 ## Features
 
-- **Low memory footprint**: ~16KB runtime heap, memory-mapped index files
+- **Memory-constrained operation**: constrained profile keeps runtime RSS in the ~100-150MB target range with a medium-density index
 - **Wide FOV support**: 10-30+ degree fields with SIP distortion modeling
 - **Robust matching**: Handles false stars (noise, hot pixels) and missing stars
 - **Fast solving**: O(1) hash table lookups with early termination
@@ -100,17 +100,18 @@ Index files are memory-mapped for efficient access without loading into RAM.
 
 ```rust
 let config = SolverConfig {
-    max_stars: 50,        // Use top N brightest stars
-    max_quads: 100,       // Maximum patterns to generate
-    max_matches: 50,      // Maximum matches to verify
-    bin_tolerance: 0.02,  // Hash bin query tolerance
-    ratio_tolerance: 0.01, // Pattern matching tolerance
+    max_stars: 60,         // Use top N brightest stars
+    max_quads: 2200,       // Maximum patterns to generate
+    max_matches: 220,      // Maximum matches to verify
+    bin_tolerance: 0.02,   // Hash bin query tolerance
+    ratio_tolerance: 0.02, // Pattern matching tolerance
     timeout_ms: 30000,    // Solver timeout
     ..Default::default()
 };
 ```
 
 Presets:
+- `SolverConfig::constrained()` - Memory-safe profile for embedded/limited-RAM systems
 - `SolverConfig::default()` - Balanced accuracy/speed
 - `SolverConfig::fast()` - Quick solving, lower accuracy
 - `SolverConfig::thorough()` - Maximum accuracy, slower
@@ -119,14 +120,24 @@ Presets:
 
 ```rust
 let config = BuildConfig {
-    fov_min_deg: 10.0,    // Minimum pattern size
+    fov_min_deg: 5.0,     // Minimum pattern size
     fov_max_deg: 30.0,    // Maximum pattern size
-    mag_limit: 7.0,       // Magnitude cutoff
+    mag_limit: 8.0,       // Magnitude cutoff
     num_bins: 1_000_000,  // Hash table size
-    max_stars: 5000,      // Stars to use for patterns
+    max_stars: 8000,      // Stars to use for patterns
+    max_patterns_per_star: 1500, // Controls index density and memory
     ..Default::default()
 };
 ```
+
+### Memory-Constrained Deployment
+
+Recommended for <200MB RAM targets:
+
+1. Build/use a medium-density index (for example: mag 8, ~8000 stars, ~1500 patterns/star).
+2. Use `SolverConfig::constrained()`.
+3. Keep `bin_tolerance` near `0.02`; larger values rapidly increase hash-bin fanout.
+4. Keep index file size under your configured `max_index_bytes` limit.
 
 ## Benchmarking
 
@@ -168,8 +179,8 @@ println!("Position difference: {:.2}\"", comparison.position_diff_arcsec.unwrap(
 | Solve rate | >95% (clean fields) |
 | Position accuracy | <10 arcsec |
 | Solve time | <100ms (after index load) |
-| Runtime memory | ~16 KB heap |
-| Index size | ~10 MB (10-30° FOV, mag 7) |
+| Runtime memory | <200 MB RSS (target 100-150 MB, constrained profile) |
+| Index size | ~50-70 MB (5-30° FOV, mag 8, medium-density index) |
 
 ## Catalog Support
 

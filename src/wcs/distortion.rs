@@ -191,10 +191,7 @@ impl SipDistortion {
             for i in 0..=self.a_order {
                 for j in 0..=(self.a_order - i) {
                     if self.a[i][j].abs() > 1e-20 {
-                        header.push_str(&format!(
-                            "A_{}_{}   = {:20.15E}\n",
-                            i, j, self.a[i][j]
-                        ));
+                        header.push_str(&format!("A_{}_{}   = {:20.15E}\n", i, j, self.a[i][j]));
                     }
                 }
             }
@@ -208,10 +205,7 @@ impl SipDistortion {
             for i in 0..=self.b_order {
                 for j in 0..=(self.b_order - i) {
                     if self.b[i][j].abs() > 1e-20 {
-                        header.push_str(&format!(
-                            "B_{}_{}   = {:20.15E}\n",
-                            i, j, self.b[i][j]
-                        ));
+                        header.push_str(&format!("B_{}_{}   = {:20.15E}\n", i, j, self.b[i][j]));
                     }
                 }
             }
@@ -225,10 +219,7 @@ impl SipDistortion {
             for i in 0..=self.ap_order {
                 for j in 0..=(self.ap_order - i) {
                     if self.ap[i][j].abs() > 1e-20 {
-                        header.push_str(&format!(
-                            "AP_{}_{}  = {:20.15E}\n",
-                            i, j, self.ap[i][j]
-                        ));
+                        header.push_str(&format!("AP_{}_{}  = {:20.15E}\n", i, j, self.ap[i][j]));
                     }
                 }
             }
@@ -242,10 +233,7 @@ impl SipDistortion {
             for i in 0..=self.bp_order {
                 for j in 0..=(self.bp_order - i) {
                     if self.bp[i][j].abs() > 1e-20 {
-                        header.push_str(&format!(
-                            "BP_{}_{}  = {:20.15E}\n",
-                            i, j, self.bp[i][j]
-                        ));
+                        header.push_str(&format!("BP_{}_{}  = {:20.15E}\n", i, j, self.bp[i][j]));
                     }
                 }
             }
@@ -555,8 +543,16 @@ mod tests {
         // Inverse should recover original (approximately)
         // Note: iterative inversion may have small residuals
         let (u_back, v_back) = sip.apply_inverse(u_prime, v_prime);
-        assert!((u_back - 100.0).abs() < 0.1, "u_back={}, expected 100.0", u_back);
-        assert!((v_back - 100.0).abs() < 0.1, "v_back={}, expected 100.0", v_back);
+        assert!(
+            (u_back - 100.0).abs() < 0.1,
+            "u_back={}, expected 100.0",
+            u_back
+        );
+        assert!(
+            (v_back - 100.0).abs() < 0.1,
+            "v_back={}, expected 100.0",
+            v_back
+        );
     }
 
     #[test]
@@ -584,8 +580,8 @@ mod tests {
 
     #[test]
     fn test_fit_sip_with_known_distortion() {
-        use crate::core::types::RaDec;
         use super::super::projection::Wcs;
+        use crate::core::types::RaDec;
 
         // Create a WCS at center of image
         let wcs = Wcs::new(

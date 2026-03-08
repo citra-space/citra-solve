@@ -1,8 +1,8 @@
 //! Benchmarking utilities for plate solver evaluation.
 
-pub mod synthetic;
-pub mod harness;
 pub mod comparison;
+pub mod harness;
+pub mod synthetic;
 
-pub use synthetic::SyntheticField;
 pub use harness::{BenchmarkResult, BenchmarkSuite};
+pub use synthetic::SyntheticField;

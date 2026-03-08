@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use crate::core::types::RaDec;
-use crate::core::math::angular_separation_arcsec;
+use super::synthetic::{generate_test_suite, SyntheticConfig, SyntheticField};
 use crate::catalog::Index;
-use crate::solver::{Solver, SolverConfig, Solution, SolveError};
-use super::synthetic::{SyntheticField, SyntheticConfig, generate_test_suite};
+use crate::core::math::angular_separation_arcsec;
+use crate::core::types::RaDec;
+use crate::solver::{Solution, SolveError, Solver, SolverConfig};
 
 /// Result of a single benchmark run.
 #[derive(Debug, Clone)]
@@ -36,19 +36,15 @@ pub struct BenchmarkResult {
 }
 
 impl BenchmarkResult {
-    fn success(
-        solution: &Solution,
-        true_wcs: &crate::wcs::Wcs,
-        solve_time: Duration,
-    ) -> Self {
+    fn success(solution: &Solution, true_wcs: &crate::wcs::Wcs, solve_time: Duration) -> Self {
         let true_center = true_wcs.crval();
         let solved_center = solution.center;
 
         let position_error = angular_separation_arcsec(&true_center, &solved_center);
 
         // Approximate RA/Dec errors
-        let ra_error = (solved_center.ra - true_center.ra).to_degrees() * 3600.0
-            * true_center.dec.cos();
+        let ra_error =
+            (solved_center.ra - true_center.ra).to_degrees() * 3600.0 * true_center.dec.cos();
         let dec_error = (solved_center.dec - true_center.dec).to_degrees() * 3600.0;
 
         // Rotation error
@@ -139,7 +135,8 @@ impl BenchmarkSuite {
         solver_config: SolverConfig,
     ) {
         println!("Generating {} synthetic fields...", num_fields);
-        let fields = generate_test_suite(index, num_fields, fov_deg, width, height, synthetic_config);
+        let fields =
+            generate_test_suite(index, num_fields, fov_deg, width, height, synthetic_config);
 
         println!("Running benchmarks...");
         for (i, field) in fields.iter().enumerate() {
@@ -227,10 +224,7 @@ impl BenchmarkSuite {
             0.0
         };
 
-        let max_position_error = position_errors
-            .iter()
-            .cloned()
-            .fold(0.0f64, f64::max);
+        let max_position_error = position_errors.iter().cloned().fold(0.0f64, f64::max);
 
         let rms_values: Vec<f64> = solved.iter().filter_map(|r| r.rms_arcsec).collect();
         let mean_rms = if !rms_values.is_empty() {

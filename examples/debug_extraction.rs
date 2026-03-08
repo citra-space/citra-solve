@@ -1,8 +1,8 @@
 //! Debug star extraction - compare detected vs catalog stars.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
 use citra_solve::wcs::Wcs;
 
@@ -73,8 +73,13 @@ fn main() {
             }
         }
 
-        println!("Sigma={:.1}: extracted {} stars, {} match catalog ({:.0}%)",
-            sigma, stars.len(), matches, 100.0 * matches as f64 / stars.len() as f64);
+        println!(
+            "Sigma={:.1}: extracted {} stars, {} match catalog ({:.0}%)",
+            sigma,
+            stars.len(),
+            matches,
+            100.0 * matches as f64 / stars.len() as f64
+        );
     }
     println!();
 
@@ -120,8 +125,12 @@ fn main() {
         }
     }
 
-    println!("\nTotal: {} detected, {} matched to catalog ({:.0}%)",
-        stars.len(), total_matched, 100.0 * total_matched as f64 / stars.len() as f64);
+    println!(
+        "\nTotal: {} detected, {} matched to catalog ({:.0}%)",
+        stars.len(),
+        total_matched,
+        100.0 * total_matched as f64 / stars.len() as f64
+    );
 
     // Also check: how many of the bright catalog stars were detected?
     println!("\nCatalog stars NOT detected (mag < 6.0 in FOV):");
@@ -133,15 +142,17 @@ fn main() {
         for star in &stars {
             let dx = star.x - cx;
             let dy = star.y - cy;
-            let dist = (dx*dx + dy*dy).sqrt();
+            let dist = (dx * dx + dy * dy).sqrt();
             if dist < 20.0 {
                 found = true;
                 break;
             }
         }
         if !found && *cx > 0.0 && *cx < 1456.0 && *cy > 0.0 && *cy < 1088.0 {
-            println!("  Cat {} at ({:.1}, {:.1}) mag={:.1} - NOT DETECTED",
-                idx, cx, cy, mag);
+            println!(
+                "  Cat {} at ({:.1}, {:.1}) mag={:.1} - NOT DETECTED",
+                idx, cx, cy, mag
+            );
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Verify WCS implementation against astrometry.net solution.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
 use citra_solve::wcs::Wcs;
 
@@ -68,7 +68,11 @@ fn main() {
         }
 
         let sep_arcsec = best_sep.to_degrees() * 3600.0;
-        let status = if sep_arcsec < match_threshold { "MATCH" } else { "miss" };
+        let status = if sep_arcsec < match_threshold {
+            "MATCH"
+        } else {
+            "miss"
+        };
 
         if sep_arcsec < match_threshold {
             matched += 1;
@@ -80,7 +84,10 @@ fn main() {
     }
 
     println!("\n========================================");
-    println!("Matched {}/30 stars (threshold: {}\")", matched, match_threshold);
+    println!(
+        "Matched {}/30 stars (threshold: {}\")",
+        matched, match_threshold
+    );
     if matched > 0 {
         println!("Average separation: {:.1}\"", total_sep / matched as f64);
     }
@@ -99,6 +106,13 @@ fn main() {
 
     for (x, y, name) in test_pixels {
         let sky = wcs.pixel_to_sky(x, y);
-        println!("  {} ({:.0},{:.0}) -> ({:.4}°, {:.4}°)", name, x, y, sky.ra_deg(), sky.dec_deg());
+        println!(
+            "  {} ({:.0},{:.0}) -> ({:.4}°, {:.4}°)",
+            name,
+            x,
+            y,
+            sky.ra_deg(),
+            sky.dec_deg()
+        );
     }
 }

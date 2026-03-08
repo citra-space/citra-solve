@@ -1,8 +1,8 @@
 //! Match hypothesis generation and initial WCS estimation.
 
-use crate::core::types::{DetectedStar, CatalogStar};
 use crate::catalog::Index;
-use crate::pattern::{Quad, PatternMatch};
+use crate::core::types::{CatalogStar, DetectedStar};
+use crate::pattern::{PatternMatch, Quad};
 use crate::wcs::Wcs;
 
 /// A match hypothesis: a proposed correspondence between detected and catalog stars.
@@ -32,10 +32,30 @@ impl Hypothesis {
 
 /// All 24 permutations of 4 elements.
 const PERMUTATIONS_4: [[usize; 4]; 24] = [
-    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
-    [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2], [1, 3, 2, 0],
-    [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0], [2, 3, 0, 1], [2, 3, 1, 0],
-    [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2], [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
+    [0, 1, 2, 3],
+    [0, 1, 3, 2],
+    [0, 2, 1, 3],
+    [0, 2, 3, 1],
+    [0, 3, 1, 2],
+    [0, 3, 2, 1],
+    [1, 0, 2, 3],
+    [1, 0, 3, 2],
+    [1, 2, 0, 3],
+    [1, 2, 3, 0],
+    [1, 3, 0, 2],
+    [1, 3, 2, 0],
+    [2, 0, 1, 3],
+    [2, 0, 3, 1],
+    [2, 1, 0, 3],
+    [2, 1, 3, 0],
+    [2, 3, 0, 1],
+    [2, 3, 1, 0],
+    [3, 0, 1, 2],
+    [3, 0, 2, 1],
+    [3, 1, 0, 2],
+    [3, 1, 2, 0],
+    [3, 2, 0, 1],
+    [3, 2, 1, 0],
 ];
 
 /// Generate hypotheses from pattern matches.
@@ -85,12 +105,9 @@ pub fn generate_hypotheses(
                 .collect();
 
             // Estimate WCS
-            if let Some(wcs) = estimate_wcs_from_matches(
-                detected_stars,
-                &star_matches,
-                image_width,
-                image_height,
-            ) {
+            if let Some(wcs) =
+                estimate_wcs_from_matches(detected_stars, &star_matches, image_width, image_height)
+            {
                 // Check if pixel scale is reasonable
                 // For the index FOV range, expect reasonable scales
                 let scale_arcsec = wcs.pixel_scale_arcsec();
@@ -186,8 +203,8 @@ fn estimate_wcs_from_matches(
     //   ...                      ...
 
     let mut a_mat: Vec<[f64; 2]> = Vec::new(); // [xi, eta] rows
-    let mut b_x: Vec<f64> = Vec::new();  // dx values
-    let mut b_y: Vec<f64> = Vec::new();  // dy values
+    let mut b_x: Vec<f64> = Vec::new(); // dx values
+    let mut b_y: Vec<f64> = Vec::new(); // dy values
 
     for (det_idx, cat_star) in matches.iter().skip(1) {
         let det = &detected_stars[*det_idx];

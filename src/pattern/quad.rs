@@ -34,11 +34,7 @@ impl Quad {
 ///
 /// Generates all valid quads and then uniformly subsamples to ensure
 /// diverse star combinations are covered across the full brightness range.
-pub fn generate_quads(
-    stars: &[DetectedStar],
-    max_stars: usize,
-    max_quads: usize,
-) -> Vec<Quad> {
+pub fn generate_quads(stars: &[DetectedStar], max_stars: usize, max_quads: usize) -> Vec<Quad> {
     let n = stars.len().min(max_stars);
     if n < 4 {
         return Vec::new();
@@ -81,13 +77,21 @@ pub fn generate_quads(
     let mut count = 0usize;
 
     for i in 0..n {
-        if quads.len() >= max_quads { break; }
+        if quads.len() >= max_quads {
+            break;
+        }
         for j in (i + 1)..n {
-            if quads.len() >= max_quads { break; }
+            if quads.len() >= max_quads {
+                break;
+            }
             for k in (j + 1)..n {
-                if quads.len() >= max_quads { break; }
+                if quads.len() >= max_quads {
+                    break;
+                }
                 for l in (k + 1)..n {
-                    if quads.len() >= max_quads { break; }
+                    if quads.len() >= max_quads {
+                        break;
+                    }
                     if count % stride == 0 {
                         if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
                             quads.push(quad);
@@ -104,7 +108,9 @@ pub fn generate_quads(
 
 /// Compute C(n, k) - number of k-combinations from n elements.
 fn combinations_count(n: usize, k: usize) -> usize {
-    if k > n { return 0; }
+    if k > n {
+        return 0;
+    }
     let mut result = 1usize;
     for i in 0..k {
         result = result.saturating_mul(n - i) / (i + 1);

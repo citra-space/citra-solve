@@ -1,7 +1,7 @@
 //! Packed star representation for memory-efficient storage.
 
+use crate::core::types::{CatalogStar, RaDec};
 use bytemuck::{Pod, Zeroable};
-use crate::core::types::{RaDec, CatalogStar};
 use std::f64::consts::PI;
 
 /// Packed star entry in the index file.

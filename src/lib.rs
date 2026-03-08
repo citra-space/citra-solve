@@ -37,21 +37,21 @@
 //! }
 //! ```
 
-pub mod core;
+pub mod bench;
 pub mod catalog;
+pub mod core;
 pub mod pattern;
 pub mod solver;
 pub mod wcs;
-pub mod bench;
 
 #[cfg(feature = "extract")]
 pub mod extract;
 
 // Re-export main types for convenience
-pub use crate::core::types::{RaDec, Vec3, DetectedStar};
 pub use crate::catalog::index::Index;
-pub use crate::solver::solver::{Solver, SolverConfig};
+pub use crate::core::types::{DetectedStar, RaDec, Vec3};
 pub use crate::solver::solution::Solution;
+pub use crate::solver::solver::{Solver, SolverConfig};
 pub use crate::wcs::Wcs;
 
 #[cfg(feature = "extract")]

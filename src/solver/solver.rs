@@ -1,12 +1,15 @@
 //! Main solver orchestration.
 
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::error::SolveError;
 use super::hypothesis::{generate_hypotheses, Hypothesis};
 use super::refine::{refine_linear_wcs, refine_solution, RefineConfig};
 use super::solution::Solution;
-use super::verify::{verify_hypothesis_with_index, DetectedStarIndex, VerifyConfig, VerifyResult};
+use super::verify::{
+    verify_hypothesis_with_index, CatalogStarIndex, DetectedStarIndex, VerifyConfig, VerifyResult,
+};
 use crate::catalog::Index;
 use crate::core::types::DetectedStar;
 use crate::pattern::{generate_quads, PatternMatcher};
@@ -32,20 +35,47 @@ pub struct SolverConfig {
     pub timeout_ms: u32,
     /// Minimum stars required to attempt solving.
     pub min_stars: usize,
+    /// Hard cap on hash bins queried per quad.
+    pub max_hash_bins: usize,
+    /// Hard cap on patterns scanned in a single hash bin.
+    pub max_patterns_per_bin: usize,
+    /// Enable two-stage solving (fast pass followed by full pass on low confidence).
+    pub enable_staged_solve: bool,
+    /// Fast-stage acceptance threshold for log-odds.
+    pub stage_accept_log_odds: f64,
+    /// Fast-stage acceptance threshold for matched stars.
+    pub stage_accept_matches: usize,
+    /// Optional maximum mapped index size (bytes).
+    pub max_index_bytes: Option<u64>,
+    /// Optional maximum number of patterns allowed in loaded index.
+    pub max_index_patterns: Option<u32>,
+    /// Enable declination-band catalog indexing during verification.
+    pub use_catalog_spatial_index: bool,
+    /// Declination-band size for catalog spatial index.
+    pub catalog_index_bin_deg: f64,
 }
 
 impl Default for SolverConfig {
     fn default() -> Self {
         Self {
-            max_stars: 40,
-            max_quads: 1800,
-            max_matches: 160,
-            bin_tolerance: 0.04,
-            ratio_tolerance: 0.03,
+            max_stars: 60,
+            max_quads: 2200,
+            max_matches: 220,
+            bin_tolerance: 0.02,
+            ratio_tolerance: 0.02,
             verify_config: VerifyConfig::default(),
             refine_config: RefineConfig::default(),
             timeout_ms: 30000, // 30 seconds
             min_stars: 4,
+            max_hash_bins: 20_000,
+            max_patterns_per_bin: 4_096,
+            enable_staged_solve: true,
+            stage_accept_log_odds: 38.0,
+            stage_accept_matches: 14,
+            max_index_bytes: Some(150 * 1024 * 1024),
+            max_index_patterns: Some(8_000_000),
+            use_catalog_spatial_index: true,
+            catalog_index_bin_deg: 5.0,
         }
     }
 }
@@ -53,17 +83,35 @@ impl Default for SolverConfig {
 impl SolverConfig {
     /// Create a "fast" configuration that trades accuracy for speed.
     pub fn fast() -> Self {
-        Self {
-            max_stars: 24,
-            max_quads: 500,
-            max_matches: 80,
-            bin_tolerance: 0.035,
-            ratio_tolerance: 0.025,
+        let mut config = Self {
+            max_stars: 28,
+            max_quads: 700,
+            max_matches: 110,
+            bin_tolerance: 0.02,
+            ratio_tolerance: 0.02,
             verify_config: VerifyConfig {
                 log_odds_threshold: 18.0,
                 ..Default::default()
             },
             timeout_ms: 5000,
+            ..Default::default()
+        };
+        config.enable_staged_solve = false;
+        config
+    }
+
+    /// Create a memory-constrained profile for embedded devices.
+    pub fn constrained() -> Self {
+        Self {
+            max_stars: 60,
+            max_quads: 2200,
+            max_matches: 220,
+            bin_tolerance: 0.02,
+            ratio_tolerance: 0.02,
+            max_hash_bins: 12_000,
+            max_patterns_per_bin: 2_048,
+            max_index_bytes: Some(200 * 1024 * 1024),
+            max_index_patterns: Some(10_000_000),
             ..Default::default()
         }
     }
@@ -81,6 +129,10 @@ impl SolverConfig {
                 ..Default::default()
             },
             timeout_ms: 120000, // 2 minutes
+            max_hash_bins: 60_000,
+            max_patterns_per_bin: 32_768,
+            max_index_bytes: None,
+            max_index_patterns: None,
             ..Default::default()
         }
     }
@@ -90,12 +142,17 @@ impl SolverConfig {
 pub struct Solver<'a> {
     index: &'a Index,
     config: SolverConfig,
+    catalog_star_index: OnceLock<CatalogStarIndex>,
 }
 
 impl<'a> Solver<'a> {
     /// Create a new solver with the given index and configuration.
     pub fn new(index: &'a Index, config: SolverConfig) -> Self {
-        Self { index, config }
+        Self {
+            index,
+            config,
+            catalog_star_index: OnceLock::new(),
+        }
     }
 
     /// Solve an image given detected star positions.
@@ -113,7 +170,76 @@ impl<'a> Solver<'a> {
                 stars.len(),
             ));
         }
+        self.enforce_resource_limits()?;
+
+        if self.should_run_fast_stage() {
+            let stage_config = self.fast_stage_config();
+            let stage_solver = Solver::new(self.index, stage_config);
+            if let Ok(stage_solution) =
+                stage_solver.solve_single_window(stars, image_width, image_height)
+            {
+                if self.fast_stage_accepted(&stage_solution) {
+                    return Ok(stage_solution);
+                }
+            }
+        }
+
         self.solve_single_window(stars, image_width, image_height)
+    }
+
+    fn enforce_resource_limits(&self) -> Result<(), SolveError> {
+        if let Some(max_bytes) = self.config.max_index_bytes {
+            let mapped = self.index.mapped_len_bytes() as u64;
+            if mapped > max_bytes {
+                return Err(SolveError::ResourceLimitExceeded(format!(
+                    "index size {} bytes exceeds configured limit {} bytes",
+                    mapped, max_bytes
+                )));
+            }
+        }
+
+        if let Some(max_patterns) = self.config.max_index_patterns {
+            let patterns = self.index.num_patterns();
+            if patterns > max_patterns {
+                return Err(SolveError::ResourceLimitExceeded(format!(
+                    "index patterns {} exceed configured limit {}",
+                    patterns, max_patterns
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn should_run_fast_stage(&self) -> bool {
+        self.config.enable_staged_solve
+            && (self.config.max_stars > 40
+                || self.config.max_quads > 900
+                || self.config.max_matches > 110
+                || self.config.bin_tolerance > 0.02
+                || self.config.ratio_tolerance > 0.02)
+    }
+
+    fn fast_stage_config(&self) -> SolverConfig {
+        let mut config = self.config.clone();
+        config.enable_staged_solve = false;
+        config.max_stars = config.max_stars.min(40).max(config.min_stars.max(8));
+        config.max_quads = config.max_quads.min(900).max(300);
+        config.max_matches = config.max_matches.min(110).max(48);
+        config.bin_tolerance = config.bin_tolerance.min(0.02);
+        config.ratio_tolerance = config.ratio_tolerance.min(0.02);
+        config.max_hash_bins = config.max_hash_bins.min(8_000).max(2_000);
+        config.max_patterns_per_bin = config.max_patterns_per_bin.min(2_048).max(256);
+        if config.timeout_ms > 0 {
+            config.timeout_ms = config.timeout_ms.min(1500);
+        }
+        config
+    }
+
+    fn fast_stage_accepted(&self, solution: &Solution) -> bool {
+        solution.log_odds >= self.config.stage_accept_log_odds
+            && solution.num_matched_stars >= self.config.stage_accept_matches
+            && solution.rms_arcsec <= 400.0
     }
 
     fn solve_single_window(
@@ -172,10 +298,20 @@ impl<'a> Solver<'a> {
             return Err(SolveError::Timeout(self.config.timeout_ms));
         }
 
+        let catalog_index = if self.config.use_catalog_spatial_index {
+            Some(self.catalog_star_index.get_or_init(|| {
+                CatalogStarIndex::from_index(self.index, self.config.catalog_index_bin_deg)
+            }))
+        } else {
+            None
+        };
+
         // Match patterns against the index
         let matcher = PatternMatcher::new(self.index)
             .with_bin_tolerance(self.config.bin_tolerance)
-            .with_ratio_tolerance(self.config.ratio_tolerance);
+            .with_ratio_tolerance(self.config.ratio_tolerance)
+            .with_max_hash_bins(self.config.max_hash_bins)
+            .with_max_patterns_per_bin(self.config.max_patterns_per_bin);
 
         let matches = matcher.find_matches_batch(&quads, 6);
 
@@ -232,6 +368,7 @@ impl<'a> Solver<'a> {
                 image_height,
                 &self.config.verify_config,
                 Some(&verify_index),
+                catalog_index,
             );
 
             if result.num_matched >= 4 {
@@ -320,6 +457,7 @@ impl<'a> Solver<'a> {
                         image_height,
                         &self.config.verify_config,
                         Some(&verify_index),
+                        catalog_index,
                     );
                     if refined_result.num_matched > refined.num_matched
                         || refined_result.hypothesis.log_odds > refined.hypothesis.log_odds
@@ -359,6 +497,7 @@ impl<'a> Solver<'a> {
                 image_height,
                 &tight_config,
                 Some(&tight_index),
+                catalog_index,
             );
 
             let match_fraction_detected =
@@ -477,6 +616,7 @@ impl<'a> Solver<'a> {
     where
         F: FnMut(&str, f32),
     {
+        self.enforce_resource_limits()?;
         progress("Generating patterns", 0.1);
 
         // Sort stars
@@ -501,9 +641,19 @@ impl<'a> Solver<'a> {
 
         progress("Matching patterns", 0.3);
 
+        let catalog_index = if self.config.use_catalog_spatial_index {
+            Some(self.catalog_star_index.get_or_init(|| {
+                CatalogStarIndex::from_index(self.index, self.config.catalog_index_bin_deg)
+            }))
+        } else {
+            None
+        };
+
         let matcher = PatternMatcher::new(self.index)
             .with_bin_tolerance(self.config.bin_tolerance)
-            .with_ratio_tolerance(self.config.ratio_tolerance);
+            .with_ratio_tolerance(self.config.ratio_tolerance)
+            .with_max_hash_bins(self.config.max_hash_bins)
+            .with_max_patterns_per_bin(self.config.max_patterns_per_bin);
 
         let matches = matcher.find_matches_batch(&quads, 6);
 
@@ -544,6 +694,7 @@ impl<'a> Solver<'a> {
                 image_height,
                 &self.config.verify_config,
                 Some(&verify_index),
+                catalog_index,
             );
 
             if best_result.is_none()
@@ -592,6 +743,8 @@ mod tests {
         let config = SolverConfig::default();
         assert!(config.max_stars > 0);
         assert!(config.timeout_ms > 0);
+        assert!(config.max_index_bytes.is_some());
+        assert!(config.max_index_patterns.is_some());
     }
 
     #[test]
@@ -608,5 +761,16 @@ mod tests {
         let default = SolverConfig::default();
         assert!(thorough.max_stars > default.max_stars);
         assert!(thorough.timeout_ms > default.timeout_ms);
+        assert!(thorough.max_index_bytes.is_none());
+        assert!(thorough.max_index_patterns.is_none());
+    }
+
+    #[test]
+    fn test_solver_config_constrained() {
+        let constrained = SolverConfig::constrained();
+        assert!(constrained.max_index_bytes.is_some());
+        assert!(constrained.max_index_patterns.is_some());
+        assert!(constrained.bin_tolerance <= 0.02);
+        assert!(constrained.max_hash_bins <= 12_000);
     }
 }

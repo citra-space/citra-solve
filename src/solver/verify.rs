@@ -1,10 +1,10 @@
 //! Bayesian verification of match hypotheses.
 
-use crate::core::types::{DetectedStar, CatalogStar};
-use crate::core::math;
-use crate::catalog::Index;
-use crate::wcs::Wcs;
 use super::hypothesis::Hypothesis;
+use crate::catalog::Index;
+use crate::core::math;
+use crate::core::types::{CatalogStar, DetectedStar, RaDec};
+use crate::wcs::Wcs;
 
 /// Spatial index for detected stars to accelerate nearest-neighbor lookups.
 #[derive(Debug, Clone)]
@@ -71,6 +71,71 @@ impl DetectedStarIndex {
     }
 }
 
+/// Spatial index for catalog stars using declination bands.
+///
+/// This avoids full catalog scans for every hypothesis verification call.
+#[derive(Debug, Clone)]
+pub struct CatalogStarIndex {
+    dec_bin_size_rad: f64,
+    dec_bins: Vec<Vec<CatalogStar>>,
+}
+
+impl CatalogStarIndex {
+    /// Build a catalog-star index from the loaded pattern index.
+    pub fn from_index(index: &Index, dec_bin_size_deg: f64) -> Self {
+        let dec_bin_size_rad = dec_bin_size_deg
+            .to_radians()
+            .clamp(1f64.to_radians(), 30f64.to_radians());
+        let num_bins = (std::f64::consts::PI / dec_bin_size_rad).ceil().max(1.0) as usize;
+        let mut dec_bins = vec![Vec::new(); num_bins];
+
+        for (idx, star) in index.stars() {
+            let catalog_star = star.to_catalog_star(idx);
+            let bin = Self::dec_to_bin(catalog_star.position.dec, dec_bin_size_rad, num_bins);
+            dec_bins[bin].push(catalog_star);
+        }
+
+        Self {
+            dec_bin_size_rad,
+            dec_bins,
+        }
+    }
+
+    /// Query stars within an angular cone around `center`.
+    pub fn query_cone(&self, center: &RaDec, radius_rad: f64) -> Vec<CatalogStar> {
+        let mut visible = Vec::new();
+        let num_bins = self.dec_bins.len();
+        if num_bins == 0 {
+            return visible;
+        }
+
+        let search_radius = radius_rad.max(0.0);
+        let dec_min = (center.dec - search_radius).max(-std::f64::consts::FRAC_PI_2);
+        let dec_max = (center.dec + search_radius).min(std::f64::consts::FRAC_PI_2);
+        let start_bin = Self::dec_to_bin(dec_min, self.dec_bin_size_rad, num_bins);
+        let end_bin = Self::dec_to_bin(dec_max, self.dec_bin_size_rad, num_bins);
+
+        for bin in start_bin..=end_bin {
+            for cat in &self.dec_bins[bin] {
+                if (cat.position.dec - center.dec).abs() > search_radius {
+                    continue;
+                }
+                let sep = math::angular_separation(center, &cat.position);
+                if sep < search_radius {
+                    visible.push(*cat);
+                }
+            }
+        }
+
+        visible
+    }
+
+    fn dec_to_bin(dec_rad: f64, bin_size_rad: f64, num_bins: usize) -> usize {
+        let bin = ((dec_rad + std::f64::consts::FRAC_PI_2) / bin_size_rad).floor() as isize;
+        bin.clamp(0, num_bins as isize - 1) as usize
+    }
+}
+
 /// Configuration for verification.
 #[derive(Debug, Clone)]
 pub struct VerifyConfig {
@@ -127,6 +192,7 @@ pub fn verify_hypothesis(
         image_height,
         config,
         None,
+        None,
     )
 }
 
@@ -139,11 +205,12 @@ pub fn verify_hypothesis_with_index(
     image_height: u32,
     config: &VerifyConfig,
     detected_index: Option<&DetectedStarIndex>,
+    catalog_index: Option<&CatalogStarIndex>,
 ) -> VerifyResult {
     let wcs = &hypothesis.wcs;
 
     // Find all catalog stars that should be in the field of view
-    let expected_stars = find_stars_in_fov(index, wcs, image_width, image_height);
+    let expected_stars = find_stars_in_fov(index, wcs, image_width, image_height, catalog_index);
 
     // Match detected stars to expected catalog stars
     let mut matched = Vec::new();
@@ -252,6 +319,7 @@ fn find_stars_in_fov(
     wcs: &Wcs,
     image_width: u32,
     image_height: u32,
+    catalog_index: Option<&CatalogStarIndex>,
 ) -> Vec<CatalogStar> {
     let mut visible = Vec::new();
 
@@ -270,13 +338,18 @@ fn find_stars_in_fov(
         .map(|c| math::angular_separation(&center, c))
         .fold(0.0f64, f64::max);
 
-    // Scan all stars (for now - could use spatial index)
+    let search_radius = fov_radius * 1.2;
+
+    if let Some(spatial_index) = catalog_index {
+        return spatial_index.query_cone(&center, search_radius);
+    }
+
+    // Fallback path: full scan.
     for (idx, star) in index.stars() {
         let pos = star.to_radec();
         let sep = math::angular_separation(&center, &pos);
 
-        if sep < fov_radius * 1.2 {
-            // 20% margin
+        if sep < search_radius {
             visible.push(star.to_catalog_star(idx));
         }
     }
@@ -304,10 +377,7 @@ fn compute_log_odds(
     let sigma = config.position_sigma_pixels;
 
     // Use median squared normalized residual (robust to outliers)
-    let mut sq_normalized: Vec<f64> = residuals
-        .iter()
-        .map(|r| (r / sigma).powi(2))
-        .collect();
+    let mut sq_normalized: Vec<f64> = residuals.iter().map(|r| (r / sigma).powi(2)).collect();
     sq_normalized.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median_sq = sq_normalized[sq_normalized.len() / 2];
 

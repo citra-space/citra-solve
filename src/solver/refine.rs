@@ -1,7 +1,7 @@
 //! Solution refinement using iterative least squares and SIP distortion.
 
-use crate::core::types::{DetectedStar, CatalogStar, RaDec};
-use crate::wcs::{Wcs, WcsWithDistortion, SipDistortion, fit_sip_distortion};
+use crate::core::types::{CatalogStar, DetectedStar, RaDec};
+use crate::wcs::{fit_sip_distortion, SipDistortion, Wcs, WcsWithDistortion};
 
 /// Configuration for refinement.
 #[derive(Debug, Clone)]
@@ -114,7 +114,14 @@ pub fn refine_solution(
             if let Some(is_active) = active_iter.next() {
                 if *is_active {
                     let det = &detected_stars[det_idx];
-                    let predicted = wcs.sky_to_pixel(&star_matches.iter().find(|(i, _)| *i == det_idx).unwrap().1.position);
+                    let predicted = wcs.sky_to_pixel(
+                        &star_matches
+                            .iter()
+                            .find(|(i, _)| *i == det_idx)
+                            .unwrap()
+                            .1
+                            .position,
+                    );
                     let dx = det.x - predicted.0;
                     let dy = det.y - predicted.1;
 
@@ -266,11 +273,7 @@ pub fn fit_sip(
 }
 
 /// Compute RMS residual in pixels (linear WCS).
-fn compute_pixel_rms(
-    detected: &[(f64, f64)],
-    catalog: &[RaDec],
-    wcs: &Wcs,
-) -> f64 {
+fn compute_pixel_rms(detected: &[(f64, f64)], catalog: &[RaDec], wcs: &Wcs) -> f64 {
     if detected.is_empty() {
         return 0.0;
     }
@@ -495,7 +498,8 @@ fn estimate_scale(pixels: &[(f64, f64)], sky: &[RaDec]) -> f64 {
         return 60.0 / 3600.0; // Default 1 arcmin/pixel
     }
 
-    let px_dist = ((pixels[0].0 - pixels[1].0).powi(2) + (pixels[0].1 - pixels[1].1).powi(2)).sqrt();
+    let px_dist =
+        ((pixels[0].0 - pixels[1].0).powi(2) + (pixels[0].1 - pixels[1].1).powi(2)).sqrt();
 
     // Angular distance in radians
     let v0 = sky[0].to_vec3();

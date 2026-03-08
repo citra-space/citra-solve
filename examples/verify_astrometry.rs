@@ -1,8 +1,8 @@
 //! Verify the astrometry.net solution by projecting detected stars.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
 use citra_solve::wcs::Wcs;
 
@@ -47,7 +47,10 @@ fn main() {
 
         let cd = [
             [ra_sign * pixel_scale * cos_r, ra_sign * pixel_scale * sin_r],
-            [dec_sign * pixel_scale * sin_r, dec_sign * pixel_scale * cos_r],
+            [
+                dec_sign * pixel_scale * sin_r,
+                dec_sign * pixel_scale * cos_r,
+            ],
         ];
 
         let wcs = Wcs::new(crpix, crval, cd);
@@ -65,8 +68,13 @@ fn main() {
             }
         }
         let sep_arcsec = best_sep.to_degrees() * 3600.0;
-        println!("{}: star -> ({:.2}°, {:.2}°), sep={:.0}\"",
-            name, sky.ra_deg(), sky.dec_deg(), sep_arcsec);
+        println!(
+            "{}: star -> ({:.2}°, {:.2}°), sep={:.0}\"",
+            name,
+            sky.ra_deg(),
+            sky.dec_deg(),
+            sep_arcsec
+        );
     }
 
     println!("\n--- Now testing with best configuration ---\n");
@@ -124,15 +132,27 @@ fn main() {
         }
 
         let sep_arcsec = best_sep.to_degrees() * 3600.0;
-        let status = if sep_arcsec < match_threshold { "MATCH" } else { "miss" };
+        let status = if sep_arcsec < match_threshold {
+            "MATCH"
+        } else {
+            "miss"
+        };
 
         if sep_arcsec < match_threshold {
             matched += 1;
             total_sep += sep_arcsec;
         }
 
-        println!("  Star {:2} ({:6.1},{:6.1}) -> ({:6.2}°,{:6.2}°) sep={:5.0}\" {}",
-            i, star.x, star.y, sky.ra_deg(), sky.dec_deg(), sep_arcsec, status);
+        println!(
+            "  Star {:2} ({:6.1},{:6.1}) -> ({:6.2}°,{:6.2}°) sep={:5.0}\" {}",
+            i,
+            star.x,
+            star.y,
+            sky.ra_deg(),
+            sky.dec_deg(),
+            sep_arcsec,
+            status
+        );
     }
 
     println!("\nMatched {}/20 stars", matched);

@@ -1,6 +1,6 @@
 //! Solution representation and output.
 
-use crate::core::types::{RaDec, CatalogStar};
+use crate::core::types::{CatalogStar, RaDec};
 use crate::wcs::Wcs;
 
 /// A successful plate solve solution.
@@ -78,7 +78,8 @@ impl Solution {
         [
             self.wcs.pixel_to_sky(0.0, 0.0),
             self.wcs.pixel_to_sky(image_width as f64, 0.0),
-            self.wcs.pixel_to_sky(image_width as f64, image_height as f64),
+            self.wcs
+                .pixel_to_sky(image_width as f64, image_height as f64),
             self.wcs.pixel_to_sky(0.0, image_height as f64),
         ]
     }

@@ -1,14 +1,14 @@
 //! Alternative index readers for different environments.
 
-use std::io::{Read, Seek, SeekFrom, BufReader};
 use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use bytemuck::from_bytes;
 
 use super::error::CatalogError;
-use super::index::{IndexHeader, INDEX_MAGIC, INDEX_VERSION, HEADER_SIZE};
-use super::star::{PackedStar, PackedPattern};
+use super::index::{IndexHeader, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION};
+use super::star::{PackedPattern, PackedStar};
 
 /// Streaming index reader for systems without memory mapping.
 ///
@@ -70,7 +70,10 @@ impl StreamingIndex {
     /// Read a single star by index.
     pub fn read_star(&mut self, idx: u32) -> Result<PackedStar, CatalogError> {
         if idx >= self.header.num_stars {
-            return Err(CatalogError::StarIndexOutOfBounds(idx, self.header.num_stars));
+            return Err(CatalogError::StarIndexOutOfBounds(
+                idx,
+                self.header.num_stars,
+            ));
         }
 
         let offset = self.stars_offset + idx as u64 * std::mem::size_of::<PackedStar>() as u64;
@@ -116,8 +119,8 @@ impl StreamingIndex {
             return Ok(Vec::new());
         }
 
-        let offset =
-            self.patterns_offset + start_pattern as u64 * std::mem::size_of::<PackedPattern>() as u64;
+        let offset = self.patterns_offset
+            + start_pattern as u64 * std::mem::size_of::<PackedPattern>() as u64;
         self.file.seek(SeekFrom::Start(offset))?;
 
         let mut patterns = Vec::with_capacity(count as usize);

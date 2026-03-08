@@ -3,10 +3,10 @@
 //! This module implements the FITS WCS standard for transforming
 //! between pixel coordinates and sky coordinates.
 
-mod projection;
 mod distortion;
+mod projection;
 mod transform;
 
+pub use distortion::{fit_sip_distortion, SipDistortion};
 pub use projection::Wcs;
-pub use distortion::{SipDistortion, fit_sip_distortion};
 pub use transform::WcsWithDistortion;

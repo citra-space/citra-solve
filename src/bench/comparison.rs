@@ -1,13 +1,13 @@
 //! Comparison with astrometry.net solutions.
 
-use std::process::Command;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
-use crate::core::types::RaDec;
 use crate::core::math::angular_separation_arcsec;
-use crate::wcs::Wcs;
+use crate::core::types::RaDec;
 use crate::solver::Solution;
+use crate::wcs::Wcs;
 
 /// Result of comparing Chameleon solution with astrometry.net.
 #[derive(Debug, Clone)]

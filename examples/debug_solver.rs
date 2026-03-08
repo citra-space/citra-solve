@@ -17,7 +17,11 @@ fn main() {
     // Load index
     let index = Index::open(index_path).expect("Failed to open index");
     let (fov_min, fov_max) = index.fov_range_deg();
-    println!("Index: {} stars, {} patterns", index.num_stars(), index.num_patterns());
+    println!(
+        "Index: {} stars, {} patterns",
+        index.num_stars(),
+        index.num_patterns()
+    );
     println!("FOV range: {:.1}° - {:.1}°\n", fov_min, fov_max);
 
     // Extract stars (use same settings as debug_matching)
@@ -59,7 +63,7 @@ fn main() {
         for &(cat_idx, cx, cy) in &cat_in_fov {
             let dx = star.x - cx;
             let dy = star.y - cy;
-            let dist = (dx*dx + dy*dy).sqrt();
+            let dist = (dx * dx + dy * dy).sqrt();
             if dist < 15.0 {
                 matched_pairs.push((det_idx, cat_idx));
                 break;
@@ -68,8 +72,15 @@ fn main() {
     }
 
     println!("Quad 0: detected stars {:?}", quads[0].star_indices);
-    let quad0_cat: Vec<u32> = quads[0].star_indices.iter()
-        .filter_map(|&det_idx| matched_pairs.iter().find(|&&(d, _)| d == det_idx).map(|&(_, c)| c))
+    let quad0_cat: Vec<u32> = quads[0]
+        .star_indices
+        .iter()
+        .filter_map(|&det_idx| {
+            matched_pairs
+                .iter()
+                .find(|&&(d, _)| d == det_idx)
+                .map(|&(_, c)| c)
+        })
         .collect();
     println!("  Catalog stars: {:?}", quad0_cat);
     println!("  Ratios: {:?}\n", quads[0].ratios);
@@ -90,8 +101,10 @@ fn main() {
             m.catalog_pattern.star_indices.iter().cloned().collect();
         let overlap = stars.intersection(&target).count();
         let marker = if overlap == 4 { " <<<< CORRECT" } else { "" };
-        println!("  Rank {:2}: dist={:.6} stars={:?} overlap={}{}",
-            rank, m.ratio_distance, m.catalog_pattern.star_indices, overlap, marker);
+        println!(
+            "  Rank {:2}: dist={:.6} stars={:?} overlap={}{}",
+            rank, m.ratio_distance, m.catalog_pattern.star_indices, overlap, marker
+        );
     }
 
     let matches = matcher.find_matches_batch(&quads, 10);
@@ -121,7 +134,10 @@ fn main() {
 
     // Take top matches - need enough to include correct match (at position 332)
     let top_matches: Vec<_> = matches.into_iter().take(500).collect();
-    println!("Using top {} matches for hypothesis generation\n", top_matches.len());
+    println!(
+        "Using top {} matches for hypothesis generation\n",
+        top_matches.len()
+    );
 
     // Generate hypotheses
     let image_width = 1456u32;
@@ -148,12 +164,19 @@ fn main() {
     for (i, h) in hypotheses.iter().take(5).enumerate() {
         let center = h.wcs.crval();
         let scale = h.wcs.pixel_scale_arcsec();
-        println!("  {}: center=({:.4}°, {:.4}°), scale={:.3}\"/px, pattern_dist={:.4}",
-            i, center.ra_deg(), center.dec_deg(), scale, h.pattern_distance);
+        println!(
+            "  {}: center=({:.4}°, {:.4}°), scale={:.3}\"/px, pattern_dist={:.4}",
+            i,
+            center.ra_deg(),
+            center.dec_deg(),
+            scale,
+            h.pattern_distance
+        );
     }
 
     // Look for hypothesis with the correct catalog stars [51, 272, 306, 376]
-    let target_stars: std::collections::HashSet<u32> = [51u32, 272, 306, 376].iter().cloned().collect();
+    let target_stars: std::collections::HashSet<u32> =
+        [51u32, 272, 306, 376].iter().cloned().collect();
     println!("\nSearching for hypothesis with correct catalog stars [51, 272, 306, 376]:");
     for (i, h) in hypotheses.iter().enumerate() {
         let match_ids: std::collections::HashSet<u32> =
@@ -162,8 +185,14 @@ fn main() {
         if overlap >= 3 {
             let center = h.wcs.crval();
             let scale = h.wcs.pixel_scale_arcsec();
-            println!("  Hypothesis {}: overlap={}, center=({:.4}°, {:.4}°), scale={:.3}\"/px",
-                i, overlap, center.ra_deg(), center.dec_deg(), scale);
+            println!(
+                "  Hypothesis {}: overlap={}, center=({:.4}°, {:.4}°), scale={:.3}\"/px",
+                i,
+                overlap,
+                center.ra_deg(),
+                center.dec_deg(),
+                scale
+            );
             println!("    Star IDs: {:?}", match_ids);
         }
     }
@@ -174,10 +203,18 @@ fn main() {
         let scale = h.wcs.pixel_scale_arcsec();
         if scale > 55.0 && scale < 70.0 {
             let center = h.wcs.crval();
-            println!("  Hypothesis {}: center=({:.4}°, {:.4}°), scale={:.3}\"/px, pattern_dist={:.4}",
-                i, center.ra_deg(), center.dec_deg(), scale, h.pattern_distance);
-            println!("    First star match IDs: {:?}",
-                h.star_matches.iter().map(|(_, c)| c.id).collect::<Vec<_>>());
+            println!(
+                "  Hypothesis {}: center=({:.4}°, {:.4}°), scale={:.3}\"/px, pattern_dist={:.4}",
+                i,
+                center.ra_deg(),
+                center.dec_deg(),
+                scale,
+                h.pattern_distance
+            );
+            println!(
+                "    First star match IDs: {:?}",
+                h.star_matches.iter().map(|(_, c)| c.id).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -185,8 +222,8 @@ fn main() {
     // Use larger sigma to account for projection errors in wide-FOV images
     println!("\nVerifying hypotheses:");
     let verify_config = VerifyConfig {
-        max_match_distance_pixels: 20.0,  // Relax matching
-        position_sigma_pixels: 10.0,      // Larger sigma for wide FOV
+        max_match_distance_pixels: 20.0, // Relax matching
+        position_sigma_pixels: 10.0,     // Larger sigma for wide FOV
         ..Default::default()
     };
 
@@ -200,8 +237,14 @@ fn main() {
             &verify_config,
         );
 
-        println!("  Hypothesis {}: matched={}/{}, rms={:.2}px, log_odds={:.2}",
-            i, result.num_matched, result.num_expected, result.rms_residual_pixels, result.hypothesis.log_odds);
+        println!(
+            "  Hypothesis {}: matched={}/{}, rms={:.2}px, log_odds={:.2}",
+            i,
+            result.num_matched,
+            result.num_expected,
+            result.rms_residual_pixels,
+            result.hypothesis.log_odds
+        );
 
         if result.num_matched > 0 && i == 0 {
             // Show first few matches
@@ -215,7 +258,14 @@ fn main() {
 
     // Find best hypothesis
     let mut best = &hypotheses[0];
-    let mut best_result = verify_hypothesis(best, &stars, &index, image_width, image_height, &verify_config);
+    let mut best_result = verify_hypothesis(
+        best,
+        &stars,
+        &index,
+        image_width,
+        image_height,
+        &verify_config,
+    );
     let mut best_idx = 0;
 
     for (i, h) in hypotheses.iter().enumerate() {
@@ -229,12 +279,28 @@ fn main() {
 
     println!("\nBest hypothesis (index {}):", best_idx);
     let center = best.wcs.crval();
-    println!("  Center: RA={:.4}°, Dec={:.4}°", center.ra_deg(), center.dec_deg());
+    println!(
+        "  Center: RA={:.4}°, Dec={:.4}°",
+        center.ra_deg(),
+        center.dec_deg()
+    );
     println!("  Scale: {:.2} arcsec/px", best.wcs.pixel_scale_arcsec());
-    println!("  Matched: {}/{} stars", best_result.num_matched, best_result.num_expected);
-    println!("  RMS residual: {:.2} pixels", best_result.rms_residual_pixels);
+    println!(
+        "  Matched: {}/{} stars",
+        best_result.num_matched, best_result.num_expected
+    );
+    println!(
+        "  RMS residual: {:.2} pixels",
+        best_result.rms_residual_pixels
+    );
     println!("  Log-odds: {:.2}", best_result.hypothesis.log_odds);
-    println!("  Star IDs: {:?}", best.star_matches.iter().map(|(_, c)| c.id).collect::<Vec<_>>());
+    println!(
+        "  Star IDs: {:?}",
+        best.star_matches
+            .iter()
+            .map(|(_, c)| c.id)
+            .collect::<Vec<_>>()
+    );
 
     // Also verify hypothesis with the correct stars specifically
     println!("\nLooking for hypothesis with exact stars [51, 376, 306, 272]:");
@@ -244,7 +310,11 @@ fn main() {
             let r = verify_hypothesis(h, &stars, &index, image_width, image_height, &verify_config);
             let center = h.wcs.crval();
             println!("  Hypothesis {} with stars {:?}:", i, ids);
-            println!("    Center: RA={:.4}°, Dec={:.4}°", center.ra_deg(), center.dec_deg());
+            println!(
+                "    Center: RA={:.4}°, Dec={:.4}°",
+                center.ra_deg(),
+                center.dec_deg()
+            );
             println!("    Scale: {:.2} arcsec/px", h.wcs.pixel_scale_arcsec());
             println!("    Matched: {}/{} stars", r.num_matched, r.num_expected);
             println!("    RMS residual: {:.2} pixels", r.rms_residual_pixels);
@@ -261,10 +331,21 @@ fn main() {
     let image_center_x = image_width as f64 / 2.0;
     let image_center_y = image_height as f64 / 2.0;
     let sky_at_center = best.wcs.pixel_to_sky(image_center_x, image_center_y);
-    println!("\nBest WCS applied to image center ({}, {}):", image_center_x, image_center_y);
-    println!("  Sky position: RA={:.4}°, Dec={:.4}°", sky_at_center.ra_deg(), sky_at_center.dec_deg());
+    println!(
+        "\nBest WCS applied to image center ({}, {}):",
+        image_center_x, image_center_y
+    );
+    println!(
+        "  Sky position: RA={:.4}°, Dec={:.4}°",
+        sky_at_center.ra_deg(),
+        sky_at_center.dec_deg()
+    );
 
     // Compare with true position at image center
     let true_center_sky = true_wcs.pixel_to_sky(image_center_x, image_center_y);
-    println!("  True sky at center: RA={:.4}°, Dec={:.4}°", true_center_sky.ra_deg(), true_center_sky.dec_deg());
+    println!(
+        "  True sky at center: RA={:.4}°, Dec={:.4}°",
+        true_center_sky.ra_deg(),
+        true_center_sky.dec_deg()
+    );
 }

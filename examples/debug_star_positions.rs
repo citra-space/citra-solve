@@ -15,8 +15,13 @@ fn main() {
     for &idx in &matched_stars {
         if let Ok(star) = index.get_star(idx) {
             let pos = star.to_radec();
-            println!("  Catalog idx {}: mag={:.1}, RA={:.2}°, Dec={:.2}°",
-                idx, star.magnitude(), pos.ra_deg(), pos.dec_deg());
+            println!(
+                "  Catalog idx {}: mag={:.1}, RA={:.2}°, Dec={:.2}°",
+                idx,
+                star.magnitude(),
+                pos.ra_deg(),
+                pos.dec_deg()
+            );
         }
     }
 
@@ -24,15 +29,23 @@ fn main() {
     // Let's find out the actual position of these stars in the brightness-sorted order
     println!("\nFirst 20 stars in index (sorted by brightness):");
     for (sorted_idx, (orig_idx, star)) in index.stars().enumerate().take(20) {
-        println!("  Sorted pos {}: catalog idx {}, mag={:.1}",
-            sorted_idx, orig_idx, star.magnitude());
+        println!(
+            "  Sorted pos {}: catalog idx {}, mag={:.1}",
+            sorted_idx,
+            orig_idx,
+            star.magnitude()
+        );
     }
 
     println!("\nLooking for our matched stars' positions in brightness order:");
     for (sorted_idx, (orig_idx, star)) in index.stars().enumerate() {
         if matched_stars.contains(&orig_idx) {
-            println!("  Catalog idx {} is at sorted position {}, mag={:.1}",
-                orig_idx, sorted_idx, star.magnitude());
+            println!(
+                "  Catalog idx {} is at sorted position {}, mag={:.1}",
+                orig_idx,
+                sorted_idx,
+                star.magnitude()
+            );
         }
     }
 
@@ -60,5 +73,8 @@ fn main() {
             }
         }
     }
-    println!("Total patterns containing catalog idx 51: {}", count_with_51);
+    println!(
+        "Total patterns containing catalog idx 51: {}",
+        count_with_51
+    );
 }

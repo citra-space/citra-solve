@@ -22,8 +22,10 @@ fn main() {
                 stars.sort();
                 if stars == target {
                     let r = pattern.ratios();
-                    println!("FOUND! Bin {}, ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                        bin, r[0], r[1], r[2], r[3], r[4]);
+                    println!(
+                        "FOUND! Bin {}, ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                        bin, r[0], r[1], r[2], r[3], r[4]
+                    );
                     found = true;
                 }
             }
@@ -49,8 +51,10 @@ fn main() {
                     count += 1;
                     if count <= 5 {
                         let r = pattern.ratios();
-                        println!("  {:?} ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                            pattern.star_indices, r[0], r[1], r[2], r[3], r[4]);
+                        println!(
+                            "  {:?} ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                            pattern.star_indices, r[0], r[1], r[2], r[3], r[4]
+                        );
                     }
                 }
             }

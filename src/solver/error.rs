@@ -25,6 +25,10 @@ pub enum SolveError {
     #[error("solver timeout after {0}ms")]
     Timeout(u32),
 
+    /// Solve was blocked by configured resource limits.
+    #[error("resource limit exceeded: {0}")]
+    ResourceLimitExceeded(String),
+
     /// Catalog/index error.
     #[error("catalog error: {0}")]
     Catalog(#[from] crate::catalog::CatalogError),

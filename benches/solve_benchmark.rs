@@ -1,9 +1,9 @@
 //! Criterion benchmarks for the plate solver.
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use citra_solve::core::types::{RaDec, DetectedStar};
-use citra_solve::pattern::{generate_quads, compute_hash};
+use citra_solve::core::types::{DetectedStar, RaDec};
+use citra_solve::pattern::{compute_hash, generate_quads};
 use citra_solve::wcs::Wcs;
 
 fn bench_quad_generation(c: &mut Criterion) {

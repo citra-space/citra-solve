@@ -1,10 +1,10 @@
 //! Debug pattern matching by checking if true matches exist.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
-use citra_solve::pattern::{generate_quads, Quad, PatternMatcher};
+use citra_solve::pattern::{generate_quads, PatternMatcher, Quad};
 use citra_solve::wcs::Wcs;
 
 fn main() {
@@ -24,7 +24,11 @@ fn main() {
 
     // Load index
     let index = Index::open(index_path).expect("Failed to open index");
-    println!("Index: {} stars, {} patterns\n", index.num_stars(), index.num_patterns());
+    println!(
+        "Index: {} stars, {} patterns\n",
+        index.num_stars(),
+        index.num_patterns()
+    );
 
     // Extract stars
     let extract_config = ExtractionConfig {
@@ -69,8 +73,10 @@ fn main() {
         if best_dist < match_threshold_px {
             matched_pairs.push((det_idx, best_cat_idx));
             if matched_pairs.len() <= 15 {
-                println!("  Detected {} ({:.0},{:.0}) -> Catalog {} (dist={:.1}px)",
-                    det_idx, star.x, star.y, best_cat_idx, best_dist);
+                println!(
+                    "  Detected {} ({:.0},{:.0}) -> Catalog {} (dist={:.1}px)",
+                    det_idx, star.x, star.y, best_cat_idx, best_dist
+                );
             }
         }
     }
@@ -109,10 +115,14 @@ fn main() {
         if all_matched {
             good_quads += 1;
             if good_quads <= 5 {
-                println!("  Quad {}: detected {:?} -> catalog {:?}",
-                    q_idx, quad.star_indices, catalog_indices);
-                println!("    Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                    quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]);
+                println!(
+                    "  Quad {}: detected {:?} -> catalog {:?}",
+                    q_idx, quad.star_indices, catalog_indices
+                );
+                println!(
+                    "    Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                    quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]
+                );
 
                 // Check if a matching pattern exists in index
                 let matches = matcher.find_matches(quad);
@@ -122,15 +132,19 @@ fn main() {
                 // Check if any match involves the correct catalog stars
                 let mut found_correct = false;
                 for m in &matches {
-                    let pattern_stars: Vec<u16> = m.catalog_pattern.star_indices.iter().cloned().collect();
+                    let pattern_stars: Vec<u16> =
+                        m.catalog_pattern.star_indices.iter().cloned().collect();
                     // Check if any of our catalog indices are in this pattern
-                    let overlap: Vec<_> = catalog_indices.iter()
+                    let overlap: Vec<_> = catalog_indices
+                        .iter()
                         .filter(|&&c| pattern_stars.contains(&(c as u16)))
                         .collect();
                     if overlap.len() >= 2 {
                         found_correct = true;
-                        println!("    FOUND: pattern stars {:?}, overlap {:?}",
-                            pattern_stars, overlap);
+                        println!(
+                            "    FOUND: pattern stars {:?}, overlap {:?}",
+                            pattern_stars, overlap
+                        );
                     }
                 }
                 if !found_correct && !matches.is_empty() {
@@ -143,8 +157,12 @@ fn main() {
     println!("Total quads with all matched stars: {}\n", good_quads);
 
     // Show the catalog star indices we're looking for
-    let matched_cat_set: std::collections::HashSet<u32> = matched_pairs.iter().map(|&(_, c)| c).collect();
-    println!("Looking for index patterns containing catalog stars: {:?}\n", matched_cat_set);
+    let matched_cat_set: std::collections::HashSet<u32> =
+        matched_pairs.iter().map(|&(_, c)| c).collect();
+    println!(
+        "Looking for index patterns containing catalog stars: {:?}\n",
+        matched_cat_set
+    );
 
     // Check for patterns with matching ratios at different tolerances
     println!("Checking ratio matching at different tolerances:");
@@ -163,9 +181,14 @@ fn main() {
             }
 
             if all_matched {
-                println!("\n  Testing quad {}: catalog stars {:?}", q_idx, catalog_indices);
-                println!("    Image ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                    quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]);
+                println!(
+                    "\n  Testing quad {}: catalog stars {:?}",
+                    q_idx, catalog_indices
+                );
+                println!(
+                    "    Image ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                    quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]
+                );
 
                 // Also compute what the catalog quad ratios would be
                 let mut cat_positions: Vec<(f64, f64)> = Vec::new();
@@ -180,10 +203,10 @@ fn main() {
                 // Compute distances and ratios from catalog positions
                 let mut distances = Vec::new();
                 for i in 0..4 {
-                    for j in (i+1)..4 {
+                    for j in (i + 1)..4 {
                         let dx = cat_positions[i].0 - cat_positions[j].0;
                         let dy = cat_positions[i].1 - cat_positions[j].1;
-                        let d = (dx*dx + dy*dy).sqrt();
+                        let d = (dx * dx + dy * dy).sqrt();
                         distances.push(d);
                     }
                 }
@@ -192,8 +215,10 @@ fn main() {
                     *d /= max_d;
                 }
                 distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                println!("    Catalog ratios (projected): [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                    distances[0], distances[1], distances[2], distances[3], distances[4]);
+                println!(
+                    "    Catalog ratios (projected): [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                    distances[0], distances[1], distances[2], distances[3], distances[4]
+                );
 
                 // Compute difference
                 let diff: f64 = (0..5).map(|i| (quad.ratios[i] - distances[i]).abs()).sum();
@@ -204,14 +229,24 @@ fn main() {
                         .with_bin_tolerance(tol)
                         .with_ratio_tolerance(tol);
                     let matches = m.find_matches(quad);
-                    let correct_matches: Vec<_> = matches.iter()
+                    let correct_matches: Vec<_> = matches
+                        .iter()
                         .filter(|m| {
-                            let stars: Vec<u16> = m.catalog_pattern.star_indices.iter().cloned().collect();
-                            catalog_indices.iter().filter(|&&c| stars.contains(&(c as u16))).count() >= 3
+                            let stars: Vec<u16> =
+                                m.catalog_pattern.star_indices.iter().cloned().collect();
+                            catalog_indices
+                                .iter()
+                                .filter(|&&c| stars.contains(&(c as u16)))
+                                .count()
+                                >= 3
                         })
                         .collect();
-                    println!("    Tolerance {:.2}: {} matches, {} correct",
-                        tol, matches.len(), correct_matches.len());
+                    println!(
+                        "    Tolerance {:.2}: {} matches, {} correct",
+                        tol,
+                        matches.len(),
+                        correct_matches.len()
+                    );
                 }
 
                 break; // Only test first good quad

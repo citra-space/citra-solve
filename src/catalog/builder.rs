@@ -33,14 +33,14 @@ pub struct BuildConfig {
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
-            fov_min_deg: 10.0,
+            fov_min_deg: 5.0,
             fov_max_deg: 30.0,
-            mag_limit: 7.0,
+            mag_limit: 8.0,
             num_bins: 1_000_000, // 1M bins
-            max_stars: 5000,
-            // Higher default dramatically improves solve recall on real imagery
-            // by preserving enough quad diversity per anchor star.
-            max_patterns_per_star: 5000,
+            max_stars: 8000,
+            // Memory-safe medium-density default tuned for high recall without
+            // pathological bin density or multi-gigabyte indices.
+            max_patterns_per_star: 1500,
         }
     }
 }
@@ -358,10 +358,17 @@ impl IndexBuilder {
 
         writer.flush()?;
 
+        let max_patterns_per_bin = bins
+            .values()
+            .map(|patterns| patterns.len() as u32)
+            .max()
+            .unwrap_or(0);
+
         Ok(BuildStats {
             num_stars: num_stars as u32,
             num_patterns: total_patterns as u32,
             num_bins_used: bins.len() as u32,
+            max_patterns_per_bin,
             avg_patterns_per_bin: if bins.is_empty() {
                 0.0
             } else {
@@ -377,6 +384,7 @@ pub struct BuildStats {
     pub num_stars: u32,
     pub num_patterns: u32,
     pub num_bins_used: u32,
+    pub max_patterns_per_bin: u32,
     pub avg_patterns_per_bin: f64,
 }
 

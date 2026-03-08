@@ -27,8 +27,11 @@ fn main() -> ExitCode {
     // Parse arguments
     let mut image_path: Option<PathBuf> = None;
     let mut index_path: Option<PathBuf> = None;
-    let mut solver_config = SolverConfig::default();
+    let mut solver_config = SolverConfig::constrained();
     let mut extract_config = ExtractionConfig::default();
+    extract_config.max_stars = solver_config.max_stars;
+    let mut fallback_indices: Vec<PathBuf> = Vec::new();
+    let mut max_stars_overridden = false;
     let mut verbose = false;
 
     let mut i = 1;
@@ -58,6 +61,7 @@ fn main() -> ExitCode {
                     let n: usize = args[i].parse().unwrap_or(100);
                     extract_config.max_stars = n;
                     solver_config.max_stars = n;
+                    max_stars_overridden = true;
                 }
             }
             "--tolerance" => {
@@ -66,6 +70,38 @@ fn main() -> ExitCode {
                     let t: f64 = args[i].parse().unwrap_or(0.05);
                     solver_config.bin_tolerance = t;
                     solver_config.ratio_tolerance = t;
+                }
+            }
+            "--profile" => {
+                i += 1;
+                if i < args.len() {
+                    solver_config = match args[i].as_str() {
+                        "fast" => SolverConfig::fast(),
+                        "balanced" => SolverConfig::default(),
+                        "thorough" => SolverConfig::thorough(),
+                        "constrained" => SolverConfig::constrained(),
+                        other => {
+                            eprintln!("Unknown profile '{}', using constrained", other);
+                            SolverConfig::constrained()
+                        }
+                    };
+                    if !max_stars_overridden {
+                        extract_config.max_stars = solver_config.max_stars;
+                    }
+                }
+            }
+            "--max-index-mb" => {
+                i += 1;
+                if i < args.len() {
+                    let mb: u64 = args[i].parse().unwrap_or(0);
+                    solver_config.max_index_bytes =
+                        if mb > 0 { Some(mb * 1024 * 1024) } else { None };
+                }
+            }
+            "--fallback-index" => {
+                i += 1;
+                if i < args.len() {
+                    fallback_indices.push(PathBuf::from(&args[i]));
                 }
             }
             "--verbose" | "-v" => {
@@ -97,22 +133,17 @@ fn main() -> ExitCode {
     println!("======================");
     println!("Image: {}", image_path.display());
     println!("Index: {}", index_path.display());
+    if !fallback_indices.is_empty() {
+        println!(
+            "Fallback indices: {}",
+            fallback_indices
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!();
-
-    // Load index
-    println!("Loading index...");
-    let index = match Index::open(&index_path) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("Failed to load index: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    println!(
-        "  {} stars, {} patterns",
-        index.num_stars(),
-        index.num_patterns()
-    );
 
     // Extract stars from image
     println!("\nExtracting stars...");
@@ -153,60 +184,101 @@ fn main() -> ExitCode {
     let (width, height) = img.dimensions();
     println!("\nImage size: {}x{}", width, height);
 
-    // Solve
-    println!("\nSolving...");
-    // Save config values before moving
+    let mut candidate_indices = vec![index_path.clone()];
+    candidate_indices.extend(fallback_indices);
+
     let max_stars_used = solver_config.max_stars;
     let bin_tol = solver_config.bin_tolerance;
     let ratio_tol = solver_config.ratio_tolerance;
+    let mut last_error: Option<(String, std::time::Duration)> = None;
 
-    let solver = Solver::new(&index, solver_config);
-    let solve_start = Instant::now();
-    let result = solver.solve(&stars, width, height);
-    let solve_time = solve_start.elapsed();
-
-    match result {
-        Ok(solution) => {
-            println!("\n========== SOLUTION ==========");
-            println!(
-                "Center: RA = {:.6}° ({:.4}h), Dec = {:.6}°",
-                solution.center.ra_deg(),
-                solution.center.ra_deg() / 15.0,
-                solution.center.dec_deg()
-            );
-            println!(
-                "Field of view: {:.3}° x {:.3}°",
-                solution.fov_width_deg, solution.fov_height_deg
-            );
-            println!("Rotation: {:.2}°", solution.rotation_deg);
-            println!("Pixel scale: {:.3}\"/px", solution.pixel_scale_arcsec);
-            println!("Matched stars: {}", solution.num_matched_stars);
-            println!("RMS: {:.1}\"", solution.rms_arcsec);
-            println!("Log-odds: {:.1}", solution.log_odds);
-            println!("Solve time: {:?}", solve_time);
-            println!("==============================\n");
-
-            // Print WCS header
-            if verbose {
-                println!("WCS Header:");
-                println!("{}", solution.wcs.to_fits_header());
+    for (attempt, path) in candidate_indices.iter().enumerate() {
+        if let Some(max_bytes) = solver_config.max_index_bytes {
+            match std::fs::metadata(path) {
+                Ok(meta) if meta.len() > max_bytes => {
+                    eprintln!(
+                        "Skipping index {} ({} bytes > limit {} bytes)",
+                        path.display(),
+                        meta.len(),
+                        max_bytes
+                    );
+                    continue;
+                }
+                _ => {}
             }
-
-            ExitCode::from(0)
         }
-        Err(e) => {
-            eprintln!("\nFailed to solve: {}", e);
-            eprintln!("Solve time: {:?}", solve_time);
 
-            if verbose {
-                eprintln!("\nDebug info:");
-                eprintln!("  Stars used: {}", stars.len().min(max_stars_used));
-                eprintln!("  Tolerance: bin={}, ratio={}", bin_tol, ratio_tol);
+        println!("\nSolving (attempt {}): {}", attempt + 1, path.display());
+        println!("Loading index...");
+        let index = match Index::open(path) {
+            Ok(idx) => idx,
+            Err(e) => {
+                eprintln!("Failed to load index '{}': {}", path.display(), e);
+                continue;
             }
+        };
+        println!(
+            "  {} stars, {} patterns",
+            index.num_stars(),
+            index.num_patterns()
+        );
 
-            ExitCode::from(1)
+        let solver = Solver::new(&index, solver_config.clone());
+        let solve_start = Instant::now();
+        let result = solver.solve(&stars, width, height);
+        let solve_time = solve_start.elapsed();
+
+        match result {
+            Ok(solution) => {
+                println!("\n========== SOLUTION ==========");
+                println!(
+                    "Center: RA = {:.6}° ({:.4}h), Dec = {:.6}°",
+                    solution.center.ra_deg(),
+                    solution.center.ra_deg() / 15.0,
+                    solution.center.dec_deg()
+                );
+                println!(
+                    "Field of view: {:.3}° x {:.3}°",
+                    solution.fov_width_deg, solution.fov_height_deg
+                );
+                println!("Rotation: {:.2}°", solution.rotation_deg);
+                println!("Pixel scale: {:.3}\"/px", solution.pixel_scale_arcsec);
+                println!("Matched stars: {}", solution.num_matched_stars);
+                println!("RMS: {:.1}\"", solution.rms_arcsec);
+                println!("Log-odds: {:.1}", solution.log_odds);
+                println!("Solve time: {:?}", solve_time);
+                println!("Solved with index: {}", path.display());
+                println!("==============================\n");
+
+                if verbose {
+                    println!("WCS Header:");
+                    println!("{}", solution.wcs.to_fits_header());
+                }
+
+                return ExitCode::from(0);
+            }
+            Err(e) => {
+                eprintln!("Failed to solve with '{}': {}", path.display(), e);
+                eprintln!("Solve time: {:?}", solve_time);
+                last_error = Some((e.to_string(), solve_time));
+            }
         }
     }
+
+    if let Some((e, solve_time)) = last_error {
+        eprintln!("\nFailed to solve: {}", e);
+        eprintln!("Solve time: {:?}", solve_time);
+    } else {
+        eprintln!("\nFailed to solve: no usable index candidates");
+    }
+
+    if verbose {
+        eprintln!("\nDebug info:");
+        eprintln!("  Stars used: {}", stars.len().min(max_stars_used));
+        eprintln!("  Tolerance: bin={}, ratio={}", bin_tol, ratio_tol);
+    }
+
+    ExitCode::from(1)
 }
 
 fn print_usage() {
@@ -216,10 +288,13 @@ fn print_usage() {
     println!();
     println!("Options:");
     println!("  -i, --image <FILE>    Input image file (JPEG, PNG)");
-    println!("  -x, --index <FILE>    Star pattern index [default: hipparcos.idx]");
-    println!("  --sigma <N>           Detection threshold in sigma [default: 5.0]");
-    println!("  --max-stars <N>       Maximum stars to use [default: 40]");
-    println!("  --tolerance <T>       Pattern matching tolerance [default: 0.05]");
+    println!("  -x, --index <FILE>      Primary star pattern index [default: hipparcos.idx]");
+    println!("  --fallback-index <FILE> Additional index path for fallback retries");
+    println!("  --profile <NAME>        Solver profile: constrained|balanced|fast|thorough [default: constrained]");
+    println!("  --max-index-mb <N>      Max allowed index size in MB (0 disables limit)");
+    println!("  --sigma <N>             Detection threshold in sigma [default: 5.5]");
+    println!("  --max-stars <N>         Maximum stars to use [default: profile-dependent]");
+    println!("  --tolerance <T>         Pattern matching tolerance [default: profile-dependent]");
     println!("  -v, --verbose         Show detailed output");
     println!("  -h, --help            Show this help message");
 }

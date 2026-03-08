@@ -1,8 +1,8 @@
 //! Debug neighbor relationships between our target stars.
 
 use citra_solve::catalog::Index;
-use citra_solve::core::types::RaDec;
 use citra_solve::core::math::angular_separation;
+use citra_solve::core::types::RaDec;
 
 fn main() {
     let index_path = "hipparcos_deep.idx";
@@ -10,7 +10,10 @@ fn main() {
 
     let (fov_min, fov_max) = index.fov_range_deg();
     println!("Index FOV range: {:.1}° - {:.1}°", fov_min, fov_max);
-    println!("Neighbor threshold used in build: {:.1}° (fov_max * 1.2)\n", fov_max as f64 * 1.2);
+    println!(
+        "Neighbor threshold used in build: {:.1}° (fov_max * 1.2)\n",
+        fov_max as f64 * 1.2
+    );
 
     // Our target stars
     let targets = [51u32, 272, 306, 376];
@@ -25,11 +28,17 @@ fn main() {
     // Compute all pairwise distances
     println!("Angular distances between target stars:");
     for i in 0..positions.len() {
-        for j in (i+1)..positions.len() {
+        for j in (i + 1)..positions.len() {
             let sep = angular_separation(&positions[i].1, &positions[j].1).to_degrees();
-            let within = if sep <= fov_max as f64 * 1.2 { "YES" } else { "NO" };
-            println!("  {} - {}: {:.2}° (within neighbor threshold: {})",
-                positions[i].0, positions[j].0, sep, within);
+            let within = if sep <= fov_max as f64 * 1.2 {
+                "YES"
+            } else {
+                "NO"
+            };
+            println!(
+                "  {} - {}: {:.2}° (within neighbor threshold: {})",
+                positions[i].0, positions[j].0, sep, within
+            );
         }
     }
     println!();
@@ -41,7 +50,9 @@ fn main() {
 
     let mut neighbors_of_51: Vec<u32> = Vec::new();
     for (idx, star) in index.stars() {
-        if idx == 51 { continue; }
+        if idx == 51 {
+            continue;
+        }
         let pos = star.to_radec();
         let sep = angular_separation(&pos51, &pos);
         if sep <= threshold_rad {
@@ -49,8 +60,15 @@ fn main() {
         }
     }
 
-    println!("Star 51 has {} neighbors within {:.1}°", neighbors_of_51.len(), fov_max as f64 * 1.2);
-    println!("  First 20: {:?}", &neighbors_of_51[..20.min(neighbors_of_51.len())]);
+    println!(
+        "Star 51 has {} neighbors within {:.1}°",
+        neighbors_of_51.len(),
+        fov_max as f64 * 1.2
+    );
+    println!(
+        "  First 20: {:?}",
+        &neighbors_of_51[..20.min(neighbors_of_51.len())]
+    );
 
     // Check if our target stars are in the neighbors
     println!("\n  Are target stars in neighbor list?");
@@ -79,5 +97,8 @@ fn main() {
         }
     }
     println!("\nTotal patterns with star 51: {}", count);
-    println!("Patterns with 51 AND one of [272, 306, 376]: {}", with_targets);
+    println!(
+        "Patterns with 51 AND one of [272, 306, 376]: {}",
+        with_targets
+    );
 }

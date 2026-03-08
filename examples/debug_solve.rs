@@ -3,7 +3,7 @@
 use citra_solve::catalog::builder::{BuildConfig, IndexBuilder};
 use citra_solve::catalog::Index;
 use citra_solve::core::types::DetectedStar;
-use citra_solve::pattern::{generate_quads, PatternMatcher, compute_hash};
+use citra_solve::pattern::{compute_hash, generate_quads, PatternMatcher};
 use citra_solve::wcs::Wcs;
 
 fn main() {
@@ -17,7 +17,7 @@ fn main() {
         fov_max_deg: 30.0,
         mag_limit: 6.0,
         num_bins: 100_000,
-        max_stars: 200,  // Very small for fast testing
+        max_stars: 200, // Very small for fast testing
         max_patterns_per_star: 20,
     };
 
@@ -46,7 +46,10 @@ fn main() {
     }
 
     let stats = builder.build(index_path).expect("Failed to build index");
-    println!("Built index: {} stars, {} patterns\n", stats.num_stars, stats.num_patterns);
+    println!(
+        "Built index: {} stars, {} patterns\n",
+        stats.num_stars, stats.num_patterns
+    );
 
     // Load index
     let index = Index::open(index_path).expect("Failed to open index");
@@ -63,8 +66,12 @@ fn main() {
         [[-pixel_scale_deg, 0.0], [0.0, pixel_scale_deg]],
     );
 
-    println!("WCS: center=({:.2}°, {:.2}°), scale={:.4}°/px\n",
-        center_radec.ra_deg(), center_radec.dec_deg(), pixel_scale_deg);
+    println!(
+        "WCS: center=({:.2}°, {:.2}°), scale={:.4}°/px\n",
+        center_radec.ra_deg(),
+        center_radec.dec_deg(),
+        pixel_scale_deg
+    );
 
     // Project all catalog stars and take ones in FOV
     let mut detected: Vec<DetectedStar> = Vec::new();
@@ -74,10 +81,19 @@ fn main() {
 
         // Check if in image with margin
         if px >= 50.0 && px < 974.0 && py >= 50.0 && py < 718.0 {
-            detected.push(DetectedStar::new(px, py, 1000.0 - star.magnitude() as f64 * 100.0));
+            detected.push(DetectedStar::new(
+                px,
+                py,
+                1000.0 - star.magnitude() as f64 * 100.0,
+            ));
             if detected.len() <= 10 {
-                println!("  Star {}: ({:.1}, {:.1}) px, mag={:.1}",
-                    idx, px, py, star.magnitude());
+                println!(
+                    "  Star {}: ({:.1}, {:.1}) px, mag={:.1}",
+                    idx,
+                    px,
+                    py,
+                    star.magnitude()
+                );
             }
         }
     }
@@ -93,7 +109,10 @@ fn main() {
     detected.sort_by(|a, b| b.flux.partial_cmp(&a.flux).unwrap());
 
     // Generate quads
-    println!("\nGenerating quads from {} detected stars...", detected.len());
+    println!(
+        "\nGenerating quads from {} detected stars...",
+        detected.len()
+    );
     let quads = generate_quads(&detected, 20, 100);
     println!("Generated {} quads", quads.len());
 
@@ -101,8 +120,10 @@ fn main() {
     for (i, quad) in quads.iter().take(3).enumerate() {
         println!("\nDetected quad {}:", i);
         println!("  Stars: {:?}", quad.star_indices);
-        println!("  Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-            quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]);
+        println!(
+            "  Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+            quad.ratios[0], quad.ratios[1], quad.ratios[2], quad.ratios[3], quad.ratios[4]
+        );
         println!("  Max edge: {:.1} px", quad.max_edge_pixels);
 
         let hash = compute_hash(&quad.ratios, 100_000);
@@ -138,8 +159,14 @@ fn main() {
         if !matches.is_empty() && tol == 0.1 {
             println!("    First match:");
             println!("      Detected quad idx: {}", matches[0].detected_quad_idx);
-            println!("      Catalog stars: {:?}", matches[0].catalog_pattern.stars());
-            println!("      Catalog ratios: {:?}", matches[0].catalog_pattern.ratios());
+            println!(
+                "      Catalog stars: {:?}",
+                matches[0].catalog_pattern.stars()
+            );
+            println!(
+                "      Catalog ratios: {:?}",
+                matches[0].catalog_pattern.ratios()
+            );
             println!("      Distance: {:.6}", matches[0].ratio_distance);
         }
     }

@@ -7,8 +7,8 @@ use citra_solve::core::types::RaDec;
 use citra_solve::extract::{extract_stars, ExtractionConfig};
 use citra_solve::pattern::{generate_quads, PatternMatcher};
 use citra_solve::solver::hypothesis::generate_hypotheses;
-use citra_solve::solver::verify::{verify_hypothesis, VerifyConfig};
 use citra_solve::solver::refine::{fit_sip, refine_linear_wcs};
+use citra_solve::solver::verify::{verify_hypothesis, VerifyConfig};
 use citra_solve::wcs::Wcs;
 
 fn main() {
@@ -19,7 +19,11 @@ fn main() {
 
     // Load index
     let index = Index::open(index_path).expect("Failed to open index");
-    println!("Index: {} stars, {} patterns", index.num_stars(), index.num_patterns());
+    println!(
+        "Index: {} stars, {} patterns",
+        index.num_stars(),
+        index.num_patterns()
+    );
 
     // Known true WCS for comparison
     let true_crval = RaDec::from_degrees(14.3012483353, -9.12424543834);
@@ -29,7 +33,10 @@ fn main() {
         [-0.00629294246889, -0.0159290388907],
     ];
     let true_wcs = Wcs::new(true_crpix, true_crval, true_cd);
-    println!("True WCS scale: {:.2} arcsec/px\n", true_wcs.pixel_scale_arcsec());
+    println!(
+        "True WCS scale: {:.2} arcsec/px\n",
+        true_wcs.pixel_scale_arcsec()
+    );
 
     // Extract stars
     let extract_config = ExtractionConfig {
@@ -100,8 +107,15 @@ fn main() {
 
     let initial_wcs = &best.hypothesis.wcs;
     let center = initial_wcs.crval();
-    println!("  Center: RA={:.4}°, Dec={:.4}°", center.ra_deg(), center.dec_deg());
-    println!("  Scale: {:.2} arcsec/px\n", initial_wcs.pixel_scale_arcsec());
+    println!(
+        "  Center: RA={:.4}°, Dec={:.4}°",
+        center.ra_deg(),
+        center.dec_deg()
+    );
+    println!(
+        "  Scale: {:.2} arcsec/px\n",
+        initial_wcs.pixel_scale_arcsec()
+    );
 
     // First, refine the linear WCS using all matched stars
     println!("=== Step 1: Refine Linear WCS ===\n");
@@ -121,8 +135,15 @@ fn main() {
         println!("  Stars used: {}", result.num_stars_used);
 
         let center = result.wcs.crval();
-        println!("  Refined center: RA={:.4}°, Dec={:.4}°", center.ra_deg(), center.dec_deg());
-        println!("  Refined scale: {:.2} arcsec/px", result.wcs.pixel_scale_arcsec());
+        println!(
+            "  Refined center: RA={:.4}°, Dec={:.4}°",
+            center.ra_deg(),
+            center.dec_deg()
+        );
+        println!(
+            "  Refined scale: {:.2} arcsec/px",
+            result.wcs.pixel_scale_arcsec()
+        );
 
         // Compare with true WCS
         let img_center = (image_width as f64 / 2.0, image_height as f64 / 2.0);
@@ -142,17 +163,13 @@ fn main() {
     println!("=== Step 2: Fit SIP Distortion ===\n");
 
     for order in 2..=4 {
-        let sip_result = fit_sip(
-            &stars,
-            &best.hypothesis.star_matches,
-            &wcs,
-            order,
-        );
+        let sip_result = fit_sip(&stars, &best.hypothesis.star_matches, &wcs, order);
 
         println!("SIP Order {}:", order);
         println!("  RMS before: {:.3} pixels", sip_result.rms_before_pixels);
         println!("  RMS after:  {:.3} pixels", sip_result.rms_after_pixels);
-        let improvement = (1.0 - sip_result.rms_after_pixels / sip_result.rms_before_pixels) * 100.0;
+        let improvement =
+            (1.0 - sip_result.rms_after_pixels / sip_result.rms_before_pixels) * 100.0;
         println!("  Improvement: {:.1}%", improvement);
         println!("  Stars used: {}", sip_result.num_stars_used);
 
@@ -175,8 +192,10 @@ fn main() {
             let err_linear = angular_distance_arcsec(&sky_linear, &sky_true);
             let err_sip = angular_distance_arcsec(&sky_sip, &sky_true);
 
-            println!("    ({:4.0},{:4.0}): linear err={:5.1}\", SIP err={:5.1}\"",
-                x, y, err_linear, err_sip);
+            println!(
+                "    ({:4.0},{:4.0}): linear err={:5.1}\", SIP err={:5.1}\"",
+                x, y, err_linear, err_sip
+            );
         }
         println!();
     }

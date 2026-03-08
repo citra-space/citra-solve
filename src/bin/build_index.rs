@@ -10,7 +10,7 @@
 //!
 //! # With custom parameters
 //! build-index --catalog hip_main.dat --output wide.idx \
-//!     --fov-min 10 --fov-max 30 --mag-limit 7.0
+//!     --fov-min 5 --fov-max 30 --mag-limit 8.0 --patterns-per-star 1500
 //! ```
 
 use std::env;
@@ -73,6 +73,12 @@ fn main() -> ExitCode {
                     config.max_stars = args[i].parse().unwrap_or(config.max_stars);
                 }
             }
+            "--num-bins" => {
+                i += 1;
+                if i < args.len() {
+                    config.num_bins = args[i].parse().unwrap_or(config.num_bins);
+                }
+            }
             "--patterns-per-star" => {
                 i += 1;
                 if i < args.len() {
@@ -112,6 +118,9 @@ fn main() -> ExitCode {
         config.fov_min_deg, config.fov_max_deg
     );
     println!("Mag limit: {:.1}", config.mag_limit);
+    println!("Max stars: {}", config.max_stars);
+    println!("Patterns/star: {}", config.max_patterns_per_star);
+    println!("Hash bins: {}", config.num_bins);
     println!();
 
     // Build index
@@ -135,11 +144,12 @@ fn print_usage() {
     println!("Options:");
     println!("  -c, --catalog <FILE>    Input star catalog file (Hipparcos format)");
     println!("  -o, --output <FILE>     Output index file [default: chameleon.idx]");
-    println!("  --fov-min <DEG>         Minimum FOV in degrees [default: 10.0]");
+    println!("  --fov-min <DEG>         Minimum FOV in degrees [default: 5.0]");
     println!("  --fov-max <DEG>         Maximum FOV in degrees [default: 30.0]");
-    println!("  --mag-limit <MAG>       Magnitude limit [default: 7.0]");
-    println!("  --max-stars <N>         Max stars for pattern generation [default: 5000]");
-    println!("  --patterns-per-star <N> Max patterns per star [default: 5000]");
+    println!("  --mag-limit <MAG>       Magnitude limit [default: 8.0]");
+    println!("  --max-stars <N>         Max stars for pattern generation [default: 8000]");
+    println!("  --patterns-per-star <N> Max patterns per star [default: 1500]");
+    println!("  --num-bins <N>          Hash bins for pattern table [default: 1000000]");
     println!("  --synthetic             Generate synthetic test catalog");
     println!("  -h, --help              Show this help message");
     println!();
@@ -187,6 +197,15 @@ fn build_index(
     println!("  Patterns generated: {}", stats.num_patterns);
     println!("  Hash bins used: {}", stats.num_bins_used);
     println!("  Avg patterns/bin: {:.2}", stats.avg_patterns_per_bin);
+    println!("  Max patterns/bin: {}", stats.max_patterns_per_bin);
+
+    if stats.avg_patterns_per_bin > 120.0 || stats.max_patterns_per_bin > 5_000 {
+        println!(
+            "  Warning: hash bins are dense (avg {:.1}, max {}).",
+            stats.avg_patterns_per_bin, stats.max_patterns_per_bin
+        );
+        println!("           Consider increasing --num-bins or reducing --patterns-per-star.");
+    }
 
     Ok(())
 }

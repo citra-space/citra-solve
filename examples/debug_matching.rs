@@ -47,7 +47,7 @@ fn main() {
         for &(cat_idx, cx, cy) in &cat_in_fov {
             let dx = star.x - cx;
             let dy = star.y - cy;
-            let dist = (dx*dx + dy*dy).sqrt();
+            let dist = (dx * dx + dy * dy).sqrt();
             if dist < 15.0 {
                 matched_pairs.push((det_idx, cat_idx));
                 break;
@@ -68,8 +68,10 @@ fn main() {
     // Find matches for the first quad (should be [51, 376, 306, 272])
     let quad0 = &quads[0];
     println!("Quad 0: detected stars {:?}", quad0.star_indices);
-    println!("  Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]\n",
-        quad0.ratios[0], quad0.ratios[1], quad0.ratios[2], quad0.ratios[3], quad0.ratios[4]);
+    println!(
+        "  Ratios: [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]\n",
+        quad0.ratios[0], quad0.ratios[1], quad0.ratios[2], quad0.ratios[3], quad0.ratios[4]
+    );
 
     // Get catalog stars for this quad
     let mut cat_indices: Vec<u32> = Vec::new();
@@ -100,10 +102,18 @@ fn main() {
         let overlap = stars.intersection(&target).count();
         let marker = if overlap == 4 { "<<<< CORRECT" } else { "" };
         let r = m.catalog_pattern.ratios();
-        println!("  {:3}: dist={:.6} stars={:?} {} {}",
-            rank, m.ratio_distance, m.catalog_pattern.star_indices,
-            if overlap > 0 { format!("(overlap: {})", overlap) } else { "".to_string() },
-            marker);
+        println!(
+            "  {:3}: dist={:.6} stars={:?} {} {}",
+            rank,
+            m.ratio_distance,
+            m.catalog_pattern.star_indices,
+            if overlap > 0 {
+                format!("(overlap: {})", overlap)
+            } else {
+                "".to_string()
+            },
+            marker
+        );
     }
 
     // Find rank of correct match
@@ -112,8 +122,10 @@ fn main() {
             m.catalog_pattern.star_indices.iter().cloned().collect();
         let overlap = stars.intersection(&target).count();
         if overlap == 4 {
-            println!("\n*** Correct match [51, 272, 306, 376] at rank {} (distance: {:.6}) ***",
-                rank, m.ratio_distance);
+            println!(
+                "\n*** Correct match [51, 272, 306, 376] at rank {} (distance: {:.6}) ***",
+                rank, m.ratio_distance
+            );
             break;
         }
     }

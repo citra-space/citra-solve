@@ -1,8 +1,8 @@
 //! Coordinate transformation utilities.
 
-use crate::core::types::RaDec;
-use super::projection::Wcs;
 use super::distortion::SipDistortion;
+use super::projection::Wcs;
+use crate::core::types::RaDec;
 
 /// Extended WCS with optional distortion.
 #[derive(Debug, Clone)]
@@ -89,7 +89,10 @@ impl WcsWithDistortion {
 
 /// Transform a list of pixel coordinates to sky coordinates.
 pub fn pixels_to_sky(wcs: &Wcs, pixels: &[(f64, f64)]) -> Vec<RaDec> {
-    pixels.iter().map(|(x, y)| wcs.pixel_to_sky(*x, *y)).collect()
+    pixels
+        .iter()
+        .map(|(x, y)| wcs.pixel_to_sky(*x, *y))
+        .collect()
 }
 
 /// Transform a list of sky coordinates to pixel coordinates.
@@ -98,11 +101,7 @@ pub fn sky_to_pixels(wcs: &Wcs, sky: &[RaDec]) -> Vec<(f64, f64)> {
 }
 
 /// Compute residuals between detected and predicted positions.
-pub fn compute_residuals(
-    wcs: &Wcs,
-    detected: &[(f64, f64)],
-    catalog: &[RaDec],
-) -> Vec<(f64, f64)> {
+pub fn compute_residuals(wcs: &Wcs, detected: &[(f64, f64)], catalog: &[RaDec]) -> Vec<(f64, f64)> {
     detected
         .iter()
         .zip(catalog.iter())
@@ -118,10 +117,7 @@ pub fn residual_rms(residuals: &[(f64, f64)]) -> f64 {
     if residuals.is_empty() {
         return 0.0;
     }
-    let sum_sq: f64 = residuals
-        .iter()
-        .map(|(dx, dy)| dx * dx + dy * dy)
-        .sum();
+    let sum_sq: f64 = residuals.iter().map(|(dx, dy)| dx * dx + dy * dy).sum();
     (sum_sq / residuals.len() as f64).sqrt()
 }
 
