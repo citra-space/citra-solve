@@ -1,79 +1,185 @@
 //! Geometric hashing for pattern matching.
 
-/// Default number of bins per dimension for hashing.
-pub const BINS_PER_DIM: u32 = 100;
+/// Number of bins for tetra signature dimensions.
+pub const TETRA_BINS_PER_DIM: u32 = 64;
+/// Number of bins for the ratio anchor dimension.
+pub const RATIO_BINS_PER_DIM: u32 = 80;
 
-/// Compute the hash bin for a set of edge ratios.
-///
-/// Uses a 5D quantization scheme where each ratio is mapped to one of
-/// BINS_PER_DIM bins, then combined into a single hash value.
-#[inline]
-pub fn compute_hash(ratios: &[f64; 5], num_bins: u32) -> u32 {
-    let mut hash: u64 = 0;
-    let mut multiplier: u64 = 1;
-
-    for &r in ratios.iter() {
-        let bin = ((r * BINS_PER_DIM as f64) as u64).min(BINS_PER_DIM as u64 - 1);
-        hash += bin * multiplier;
-        multiplier *= BINS_PER_DIM as u64;
-    }
-
-    (hash % num_bins as u64) as u32
+/// One hashed probe candidate with its integer-grid distance to center.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashProbe {
+    pub bin: u32,
+    pub l1_distance: u16,
 }
 
-/// Query all hash bins that could match the given ratios within tolerance.
-///
-/// Returns a list of bin indices to query. The tolerance is specified as
-/// a fraction of the ratio range (0-1), typically 0.01-0.05.
-pub fn query_hash_bins(ratios: &[f64; 5], num_bins: u32, tolerance: f64) -> Vec<u32> {
-    let delta = (tolerance * BINS_PER_DIM as f64).ceil() as i32;
+#[inline]
+fn quantize_ratio_anchor(r: f64) -> u32 {
+    (r.clamp(0.0, 0.999_999) * RATIO_BINS_PER_DIM as f64).floor() as u32
+}
 
-    // Compute center bins for each dimension
-    let centers: Vec<i32> = ratios
-        .iter()
-        .map(|&r| (r * BINS_PER_DIM as f64) as i32)
-        .collect();
+#[inline]
+fn quantize_tetra(v: f64) -> u32 {
+    // Tetra coordinates are typically in [-2, 2] after baseline normalization.
+    let norm = ((v.clamp(-2.0, 2.0) + 2.0) * 0.25).clamp(0.0, 0.999_999);
+    (norm * TETRA_BINS_PER_DIM as f64).floor() as u32
+}
 
-    // Generate all combinations within the tolerance hypercube
-    let mut hashes = Vec::new();
+#[inline]
+fn hash_from_bins(tetra_bins: [u32; 4], ratio_anchor_bin: u32, num_bins: u32) -> u32 {
+    let mut h: u64 = 0x9E37_79B9_7F4A_7C15;
+    for &b in &tetra_bins {
+        h ^= b as u64 + 0x9E37_79B9 + (h << 6) + (h >> 2);
+    }
+    h ^= ratio_anchor_bin as u64 + 0x85EB_CA77 + (h << 6) + (h >> 2);
+    (h % num_bins as u64) as u32
+}
+
+/// Compute hash bin for a quad using tetra-primary signature and one ratio anchor.
+#[inline]
+pub fn compute_hash(ratios: &[f64; 5], tetra: &[f64; 4], num_bins: u32) -> u32 {
+    let tetra_bins = [
+        quantize_tetra(tetra[0]),
+        quantize_tetra(tetra[1]),
+        quantize_tetra(tetra[2]),
+        quantize_tetra(tetra[3]),
+    ];
+    let ratio_anchor = quantize_ratio_anchor(ratios[2]);
+    hash_from_bins(tetra_bins, ratio_anchor, num_bins)
+}
+
+/// Query all hash bins that could match within ratio/tetra tolerance.
+pub fn query_hash_bins(
+    ratios: &[f64; 5],
+    tetra: &[f64; 4],
+    num_bins: u32,
+    ratio_tolerance: f64,
+    tetra_tolerance: f64,
+) -> Vec<u32> {
+    query_hash_bins_ranked(
+        ratios,
+        tetra,
+        num_bins,
+        ratio_tolerance,
+        tetra_tolerance,
+        usize::MAX,
+    )
+    .into_iter()
+    .map(|p| p.bin)
+    .collect()
+}
+
+/// Query candidate bins ranked by integer-grid distance from hash center.
+pub fn query_hash_bins_ranked(
+    ratios: &[f64; 5],
+    tetra: &[f64; 4],
+    num_bins: u32,
+    ratio_tolerance: f64,
+    tetra_tolerance: f64,
+    max_bins: usize,
+) -> Vec<HashProbe> {
+    if num_bins == 0 || max_bins == 0 {
+        return Vec::new();
+    }
+
+    let centers_t = [
+        quantize_tetra(tetra[0]) as i32,
+        quantize_tetra(tetra[1]) as i32,
+        quantize_tetra(tetra[2]) as i32,
+        quantize_tetra(tetra[3]) as i32,
+    ];
+    let center_r = quantize_ratio_anchor(ratios[2]) as i32;
+
+    let delta_t = (tetra_tolerance.max(0.0) * TETRA_BINS_PER_DIM as f64).ceil() as i32;
+    let delta_r = (ratio_tolerance.max(0.0) * RATIO_BINS_PER_DIM as f64).ceil() as i32;
+
+    let mut probes = Vec::new();
 
     fn recurse(
-        centers: &[i32],
         idx: usize,
-        current: &mut [u32; 5],
-        delta: i32,
+        centers_t: &[i32; 4],
+        center_r: i32,
+        current_t: &mut [u32; 4],
+        current_r: &mut u32,
+        l1_distance: i32,
+        delta_t: i32,
+        delta_r: i32,
         num_bins: u32,
-        hashes: &mut Vec<u32>,
+        probes: &mut Vec<HashProbe>,
     ) {
         if idx == 5 {
-            // Compute hash from current bin combination
-            let mut hash: u64 = 0;
-            let mut multiplier: u64 = 1;
-            for &bin in current.iter() {
-                hash += bin as u64 * multiplier;
-                multiplier *= BINS_PER_DIM as u64;
-            }
-            hashes.push((hash % num_bins as u64) as u32);
+            probes.push(HashProbe {
+                bin: hash_from_bins(*current_t, *current_r, num_bins),
+                l1_distance: l1_distance as u16,
+            });
             return;
         }
 
-        let center = centers[idx];
-        let min_bin = (center - delta).max(0) as u32;
-        let max_bin = (center + delta).min(BINS_PER_DIM as i32 - 1) as u32;
+        if idx < 4 {
+            let center = centers_t[idx];
+            let min_bin = (center - delta_t).max(0) as u32;
+            let max_bin = (center + delta_t).min(TETRA_BINS_PER_DIM as i32 - 1) as u32;
+            for bin in min_bin..=max_bin {
+                current_t[idx] = bin;
+                recurse(
+                    idx + 1,
+                    centers_t,
+                    center_r,
+                    current_t,
+                    current_r,
+                    l1_distance + (bin as i32 - center).abs(),
+                    delta_t,
+                    delta_r,
+                    num_bins,
+                    probes,
+                );
+            }
+            return;
+        }
 
+        let min_bin = (center_r - delta_r).max(0) as u32;
+        let max_bin = (center_r + delta_r).min(RATIO_BINS_PER_DIM as i32 - 1) as u32;
         for bin in min_bin..=max_bin {
-            current[idx] = bin;
-            recurse(centers, idx + 1, current, delta, num_bins, hashes);
+            *current_r = bin;
+            recurse(
+                idx + 1,
+                centers_t,
+                center_r,
+                current_t,
+                current_r,
+                l1_distance + (bin as i32 - center_r).abs(),
+                delta_t,
+                delta_r,
+                num_bins,
+                probes,
+            );
         }
     }
 
-    let mut current = [0u32; 5];
-    recurse(&centers, 0, &mut current, delta, num_bins, &mut hashes);
+    let mut current_t = [0u32; 4];
+    let mut current_r = 0u32;
+    recurse(
+        0,
+        &centers_t,
+        center_r,
+        &mut current_t,
+        &mut current_r,
+        0,
+        delta_t,
+        delta_r,
+        num_bins,
+        &mut probes,
+    );
 
-    // Remove duplicates (can occur due to modulo)
-    hashes.sort_unstable();
-    hashes.dedup();
-    hashes
+    probes.sort_by(|a, b| {
+        a.l1_distance
+            .cmp(&b.l1_distance)
+            .then_with(|| a.bin.cmp(&b.bin))
+    });
+    probes.dedup_by(|a, b| a.bin == b.bin);
+    if probes.len() > max_bins {
+        probes.truncate(max_bins);
+    }
+    probes
 }
 
 /// Compute the L2 distance between two sets of ratios.
@@ -111,56 +217,49 @@ mod tests {
     #[test]
     fn test_hash_deterministic() {
         let ratios = [0.1, 0.2, 0.3, 0.4, 0.5];
-        let h1 = compute_hash(&ratios, 1_000_000);
-        let h2 = compute_hash(&ratios, 1_000_000);
+        let tetra = [0.15, 0.21, 0.77, 0.41];
+        let h1 = compute_hash(&ratios, &tetra, 1_000_000);
+        let h2 = compute_hash(&ratios, &tetra, 1_000_000);
         assert_eq!(h1, h2);
     }
 
     #[test]
-    fn test_hash_different_ratios() {
-        let r1 = [0.1, 0.2, 0.3, 0.4, 0.5];
-        let r2 = [0.15, 0.25, 0.35, 0.45, 0.55];
-        let h1 = compute_hash(&r1, 1_000_000);
-        let h2 = compute_hash(&r2, 1_000_000);
-        // These should (usually) hash to different bins
+    fn test_hash_changes_with_tetra() {
+        let ratios = [0.1, 0.2, 0.3, 0.4, 0.5];
+        let t1 = [0.1, 0.2, 0.8, 0.3];
+        let t2 = [0.2, 0.1, 0.7, 0.4];
+        let h1 = compute_hash(&ratios, &t1, 1_000_000);
+        let h2 = compute_hash(&ratios, &t2, 1_000_000);
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn test_query_bins_includes_center() {
         let ratios = [0.5, 0.5, 0.5, 0.5, 0.5];
-        let center_hash = compute_hash(&ratios, 1_000_000);
-        let bins = query_hash_bins(&ratios, 1_000_000, 0.01);
-
+        let tetra = [0.2, 0.2, 0.8, 0.2];
+        let center_hash = compute_hash(&ratios, &tetra, 1_000_000);
+        let bins = query_hash_bins(&ratios, &tetra, 1_000_000, 0.01, 0.02);
         assert!(bins.contains(&center_hash));
     }
 
     #[test]
     fn test_query_bins_expands_with_tolerance() {
         let ratios = [0.5, 0.5, 0.5, 0.5, 0.5];
-        let bins_small = query_hash_bins(&ratios, 1_000_000, 0.01);
-        let bins_large = query_hash_bins(&ratios, 1_000_000, 0.05);
-
+        let tetra = [0.2, 0.2, 0.8, 0.2];
+        let bins_small = query_hash_bins(&ratios, &tetra, 1_000_000, 0.01, 0.02);
+        let bins_large = query_hash_bins(&ratios, &tetra, 1_000_000, 0.03, 0.04);
         assert!(bins_large.len() > bins_small.len());
     }
 
     #[test]
-    fn test_ratio_distance() {
-        let a = [0.1, 0.2, 0.3, 0.4, 0.5];
-        let b = [0.1, 0.2, 0.3, 0.4, 0.5];
-        assert!((ratio_distance(&a, &b)).abs() < 1e-10);
-
-        let c = [0.2, 0.3, 0.4, 0.5, 0.6];
-        let d = ratio_distance(&a, &c);
-        assert!(d > 0.0);
-    }
-
-    #[test]
-    fn test_ratios_match() {
-        let a = [0.1, 0.2, 0.3, 0.4, 0.5];
-        let b = [0.101, 0.201, 0.301, 0.401, 0.501];
-
-        assert!(ratios_match(&a, &b, 0.01));
-        assert!(!ratios_match(&a, &b, 0.001));
+    fn test_query_bins_ranked_prefers_center() {
+        let ratios = [0.4, 0.5, 0.6, 0.7, 0.8];
+        let tetra = [0.11, 0.24, 0.73, 0.35];
+        let center = compute_hash(&ratios, &tetra, 1_000_000);
+        let probes = query_hash_bins_ranked(&ratios, &tetra, 1_000_000, 0.02, 0.03, 32);
+        assert!(!probes.is_empty());
+        assert_eq!(probes[0].bin, center);
+        assert_eq!(probes[0].l1_distance, 0);
     }
 }
+

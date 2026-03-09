@@ -16,16 +16,24 @@ pub struct Hypothesis {
     pub pattern_distance: f64,
     /// Log-odds from verification (set during verification).
     pub log_odds: f64,
+    /// Source detected quad index that generated this hypothesis.
+    pub source_quad_idx: usize,
 }
 
 impl Hypothesis {
     /// Create a new unverified hypothesis.
-    pub fn new(star_matches: Vec<(usize, CatalogStar)>, wcs: Wcs, pattern_distance: f64) -> Self {
+    pub fn new(
+        star_matches: Vec<(usize, CatalogStar)>,
+        wcs: Wcs,
+        pattern_distance: f64,
+        source_quad_idx: usize,
+    ) -> Self {
         Self {
             star_matches,
             wcs,
             pattern_distance,
             log_odds: f64::NEG_INFINITY,
+            source_quad_idx,
         }
     }
 }
@@ -57,6 +65,9 @@ const PERMUTATIONS_4: [[usize; 4]; 24] = [
     [3, 2, 0, 1],
     [3, 2, 1, 0],
 ];
+
+/// All 4 choose 3 subsets of quad vertices.
+const SUBSETS_3_OF_4: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
 
 /// Generate hypotheses from pattern matches.
 ///
@@ -90,41 +101,82 @@ pub fn generate_hypotheses(
             continue;
         }
 
-        // Try all 24 permutations and find the best one
+        // Try all 24 permutations and find the best one. For resilience to one
+        // false star in the quad, optionally fit 3-of-4 subsets and score on
+        // robust trimmed residuals.
         let mut best_wcs: Option<Wcs> = None;
-        let mut best_residual = f64::MAX;
+        let mut best_score = f64::MAX;
         let mut best_matches: Vec<(usize, CatalogStar)> = Vec::new();
 
         for perm in &PERMUTATIONS_4 {
-            // Create star matches with this permutation
-            let star_matches: Vec<(usize, CatalogStar)> = quad
+            // Create full 4-star matches for this permutation.
+            let full_matches: Vec<(usize, CatalogStar)> = quad
                 .star_indices
                 .iter()
                 .enumerate()
                 .map(|(i, &det_idx)| (det_idx, cat_stars[perm[i]]))
                 .collect();
 
-            // Estimate WCS
-            if let Some(wcs) =
-                estimate_wcs_from_matches(detected_stars, &star_matches, image_width, image_height)
+            // First try full 4-star fit.
+            if let Some(wcs_full) =
+                estimate_wcs_from_matches(detected_stars, &full_matches, image_width, image_height)
             {
-                // Check if pixel scale is reasonable
-                // For the index FOV range, expect reasonable scales
-                let scale_arcsec = wcs.pixel_scale_arcsec();
+                let scale_arcsec = wcs_full.pixel_scale_arcsec();
                 let fov_deg = scale_arcsec * image_diagonal / 3600.0;
+                if fov_deg >= 1.0 && fov_deg <= 60.0 {
+                    let full_residual = compute_match_residual(detected_stars, &full_matches, &wcs_full);
+                    if full_residual < best_score {
+                        best_score = full_residual;
+                        best_wcs = Some(wcs_full.clone());
+                        best_matches = full_matches.clone();
+                    }
 
-                // Skip if FOV is unreasonable (< 1° or > 60°)
+                    // If full fit is already tight, skip subset fallback.
+                    if full_residual <= 1.8 {
+                        continue;
+                    }
+                }
+            }
+
+            // 3-of-4 fallback for false/missing-star resilience.
+            for subset in SUBSETS_3_OF_4 {
+                let subset_matches: Vec<(usize, CatalogStar)> = subset
+                    .iter()
+                    .map(|&idx| full_matches[idx])
+                    .collect();
+
+                let Some(wcs_subset) = estimate_wcs_from_matches(
+                    detected_stars,
+                    &subset_matches,
+                    image_width,
+                    image_height,
+                ) else {
+                    continue;
+                };
+
+                let scale_arcsec = wcs_subset.pixel_scale_arcsec();
+                let fov_deg = scale_arcsec * image_diagonal / 3600.0;
                 if fov_deg < 1.0 || fov_deg > 60.0 {
                     continue;
                 }
 
-                // Compute residual: how well do the matched stars fit the WCS?
-                let residual = compute_match_residual(detected_stars, &star_matches, &wcs);
+                // Score with trimmed robust residual on all 4 correspondences.
+                let mut residuals = Vec::with_capacity(4);
+                for (det_idx, cat_star) in &full_matches {
+                    let det = &detected_stars[*det_idx];
+                    let (pred_x, pred_y) = wcs_subset.sky_to_pixel(&cat_star.position);
+                    let dx = det.x - pred_x;
+                    let dy = det.y - pred_y;
+                    residuals.push((dx * dx + dy * dy).sqrt());
+                }
+                residuals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let robust_score =
+                    (residuals[0] + residuals[1] + residuals[2]) / 3.0 + 0.20 * residuals[3];
 
-                if residual < best_residual {
-                    best_residual = residual;
-                    best_wcs = Some(wcs);
-                    best_matches = star_matches;
+                if robust_score < best_score {
+                    best_score = robust_score;
+                    best_wcs = Some(wcs_subset);
+                    best_matches = subset_matches;
                 }
             }
         }
@@ -135,6 +187,7 @@ pub fn generate_hypotheses(
                 best_matches,
                 wcs,
                 pattern_match.ratio_distance,
+                pattern_match.detected_quad_idx,
             ));
         }
     }

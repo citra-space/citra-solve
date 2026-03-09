@@ -32,4 +32,8 @@ pub enum CatalogError {
     /// Hash bin out of bounds.
     #[error("hash bin {0} out of bounds (max {1})")]
     HashBinOutOfBounds(u32, u32),
+
+    /// Index header contains invalid metadata.
+    #[error("malformed index header: {0}")]
+    MalformedData(String),
 }

@@ -95,8 +95,12 @@ impl PackedStar {
 /// Each pattern references 4 stars and stores 5 edge ratios.
 /// - Star indices: 4 x 16-bit = 8 bytes
 /// - Edge ratios: 5 x 16-bit (0-65535 maps to 0.0-1.0) = 10 bytes
+/// - Tetra signature: 4 x 8-bit = 4 bytes
+/// - Scale band id: 8-bit
+/// - Reserved: 8-bit
+/// - Max edge length in centi-degrees: 16-bit
 ///
-/// Total: 18 bytes per pattern
+/// Total: 26 bytes per pattern
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct PackedPattern {
@@ -104,13 +108,28 @@ pub struct PackedPattern {
     pub star_indices: [u16; 4],
     /// Normalized edge ratios (sorted, excluding longest = 1.0).
     pub edge_ratios: [u16; 5],
+    /// Canonical tetra signature [x1, y1, x2, y2], fixed-point.
+    pub tetra_xy: [i8; 4],
+    /// Log-scale band id for the pattern angular size.
+    pub scale_band: u8,
+    /// Reserved for future use.
+    pub _reserved: u8,
+    /// Maximum edge length of the pattern in centi-degrees.
+    pub max_edge_cdeg: u16,
 }
 
 const RATIO_SCALE: f64 = 65535.0;
+const TETRA_SCALE: f64 = 63.0;
 
 impl PackedPattern {
     /// Create a packed pattern from star indices and ratios.
-    pub fn new(star_indices: [u16; 4], ratios: [f64; 5]) -> Self {
+    pub fn new(
+        star_indices: [u16; 4],
+        ratios: [f64; 5],
+        tetra_signature: [f64; 4],
+        scale_band: u8,
+        max_edge_deg: f64,
+    ) -> Self {
         let edge_ratios = [
             (ratios[0] * RATIO_SCALE) as u16,
             (ratios[1] * RATIO_SCALE) as u16,
@@ -118,9 +137,19 @@ impl PackedPattern {
             (ratios[3] * RATIO_SCALE) as u16,
             (ratios[4] * RATIO_SCALE) as u16,
         ];
+        let tetra_xy = [
+            (tetra_signature[0].clamp(-2.0, 2.0) * TETRA_SCALE) as i8,
+            (tetra_signature[1].clamp(-2.0, 2.0) * TETRA_SCALE) as i8,
+            (tetra_signature[2].clamp(-2.0, 2.0) * TETRA_SCALE) as i8,
+            (tetra_signature[3].clamp(-2.0, 2.0) * TETRA_SCALE) as i8,
+        ];
         Self {
             star_indices,
             edge_ratios,
+            tetra_xy,
+            scale_band,
+            _reserved: 0,
+            max_edge_cdeg: (max_edge_deg.clamp(0.0, 655.35) * 100.0) as u16,
         }
     }
 
@@ -140,6 +169,29 @@ impl PackedPattern {
     #[inline]
     pub fn stars(&self) -> [u16; 4] {
         self.star_indices
+    }
+
+    /// Get tetra signature as floating point values.
+    #[inline]
+    pub fn tetra_signature(&self) -> [f64; 4] {
+        [
+            self.tetra_xy[0] as f64 / TETRA_SCALE,
+            self.tetra_xy[1] as f64 / TETRA_SCALE,
+            self.tetra_xy[2] as f64 / TETRA_SCALE,
+            self.tetra_xy[3] as f64 / TETRA_SCALE,
+        ]
+    }
+
+    /// Get the quantized scale band id.
+    #[inline]
+    pub fn scale_band(&self) -> u8 {
+        self.scale_band
+    }
+
+    /// Get the maximum edge length in degrees.
+    #[inline]
+    pub fn max_edge_deg(&self) -> f64 {
+        self.max_edge_cdeg as f64 / 100.0
     }
 }
 
@@ -182,19 +234,28 @@ mod tests {
     fn test_packed_pattern_roundtrip() {
         let stars = [1u16, 2, 3, 4];
         let ratios = [0.1, 0.25, 0.5, 0.75, 0.9];
+        let tetra = [0.15, 0.23, 0.77, 0.31];
+        let band = 3u8;
+        let max_edge = 17.25f64;
 
-        let packed = PackedPattern::new(stars, ratios);
+        let packed = PackedPattern::new(stars, ratios, tetra, band, max_edge);
         let recovered = packed.ratios();
+        let recovered_tetra = packed.tetra_signature();
 
         for i in 0..5 {
             assert!((recovered[i] - ratios[i]).abs() < 0.0001);
         }
         assert_eq!(packed.stars(), stars);
+        for i in 0..4 {
+            assert!((recovered_tetra[i] - tetra[i]).abs() < 0.02);
+        }
+        assert_eq!(packed.scale_band(), band);
+        assert!((packed.max_edge_deg() - max_edge).abs() < 0.02);
     }
 
     #[test]
     fn test_packed_sizes() {
         assert_eq!(std::mem::size_of::<PackedStar>(), 12);
-        assert_eq!(std::mem::size_of::<PackedPattern>(), 18);
+        assert_eq!(std::mem::size_of::<PackedPattern>(), 26);
     }
 }

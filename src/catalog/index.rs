@@ -1,6 +1,6 @@
 //! Index file format and memory-mapped reader.
 
-use bytemuck::{cast_slice, from_bytes, Pod, Zeroable};
+use bytemuck::{from_bytes, Pod, Zeroable};
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
@@ -13,7 +13,10 @@ use crate::core::types::CatalogStar;
 pub const INDEX_MAGIC: [u8; 4] = *b"CHAM";
 
 /// Current index format version.
-pub const INDEX_VERSION: u16 = 1;
+pub const INDEX_VERSION: u16 = 4;
+
+/// Default hash quantization bins per ratio dimension.
+pub const DEFAULT_HASH_BINS_PER_DIM: u8 = 100;
 
 /// Index file header.
 #[repr(C)]
@@ -39,8 +42,14 @@ pub struct IndexHeader {
     pub mag_limit: f32,
     /// Pattern size (number of stars per pattern, typically 4).
     pub pattern_size: u8,
+    /// Number of logarithmic angular scale bands.
+    pub num_scale_bands: u8,
+    /// Ratio quantization bins per dimension used for hashing.
+    pub hash_bins_per_dim: u8,
+    /// Reserved for future header flags.
+    pub _reserved0: u8,
     /// Reserved padding to reach 64 bytes total.
-    pub _reserved: [u8; 31],
+    pub _reserved: [u8; 28],
 }
 
 /// Size of the index header in bytes.
@@ -55,6 +64,8 @@ impl IndexHeader {
         fov_min_deg: f32,
         fov_max_deg: f32,
         mag_limit: f32,
+        num_scale_bands: u8,
+        hash_bins_per_dim: u8,
     ) -> Self {
         Self {
             magic: INDEX_MAGIC,
@@ -67,7 +78,10 @@ impl IndexHeader {
             fov_max_deg,
             mag_limit,
             pattern_size: 4,
-            _reserved: [0; 31],
+            num_scale_bands: num_scale_bands.max(1),
+            hash_bins_per_dim: hash_bins_per_dim.max(2),
+            _reserved0: 0,
+            _reserved: [0; 28],
         }
     }
 
@@ -78,6 +92,16 @@ impl IndexHeader {
         }
         if self.version != INDEX_VERSION {
             return Err(CatalogError::UnsupportedVersion(self.version));
+        }
+        if self.num_scale_bands == 0 {
+            return Err(CatalogError::MalformedData(
+                "num_scale_bands must be >= 1".to_string(),
+            ));
+        }
+        if self.hash_bins_per_dim < 2 {
+            return Err(CatalogError::MalformedData(
+                "hash_bins_per_dim must be >= 2".to_string(),
+            ));
         }
         Ok(())
     }
@@ -179,6 +203,18 @@ impl Index {
         self.header.num_bins
     }
 
+    /// Get the number of angular scale bands in this index.
+    #[inline]
+    pub fn num_scale_bands(&self) -> u8 {
+        self.header.num_scale_bands.max(1)
+    }
+
+    /// Get hash quantization bins per dimension.
+    #[inline]
+    pub fn hash_bins_per_dim(&self) -> u8 {
+        self.header.hash_bins_per_dim.max(2)
+    }
+
     /// Get a star by index.
     #[inline]
     pub fn get_star(&self, idx: u32) -> Result<&PackedStar, CatalogError> {
@@ -211,6 +247,43 @@ impl Index {
         }
 
         Ok(&self.patterns[start..end])
+    }
+
+    /// Get the global hash-bin range [start, end) for a given angular scale band.
+    pub fn scale_band_bin_range(&self, scale_band: u8) -> (u32, u32) {
+        let num_scale_bands = self.num_scale_bands() as u32;
+        let band = (scale_band as u32).min(num_scale_bands.saturating_sub(1));
+        let start = band * self.header.num_bins / num_scale_bands;
+        let end = ((band + 1) * self.header.num_bins / num_scale_bands).max(start + 1);
+        (start, end)
+    }
+
+    /// Number of hash bins assigned to a scale band.
+    pub fn bins_in_scale_band(&self, scale_band: u8) -> u32 {
+        let (start, end) = self.scale_band_bin_range(scale_band);
+        (end - start).max(1)
+    }
+
+    /// Map a local per-band hash bin into the global hash-bin space.
+    pub fn local_to_global_bin(&self, scale_band: u8, local_bin: u32) -> u32 {
+        let (start, end) = self.scale_band_bin_range(scale_band);
+        let band_bins = (end - start).max(1);
+        start + (local_bin % band_bins)
+    }
+
+    /// Quantize an angular scale (degrees) into a scale band id.
+    pub fn scale_band_for_angle_deg(&self, angle_deg: f64) -> u8 {
+        let bands = self.num_scale_bands() as f64;
+        if bands <= 1.0 {
+            return 0;
+        }
+
+        let min_scale = self.header.fov_min_deg.max(1e-3) as f64;
+        let max_scale = self.header.fov_max_deg.max(self.header.fov_min_deg + 1e-3) as f64;
+        let angle = angle_deg.clamp(min_scale, max_scale);
+        let ratio = (angle / min_scale).ln() / (max_scale / min_scale).ln();
+        let idx = (ratio.clamp(0.0, 0.999_999) * bands).floor() as u8;
+        idx.min(self.num_scale_bands().saturating_sub(1))
     }
 
     /// Iterate over all stars.
@@ -257,7 +330,16 @@ mod tests {
 
     #[test]
     fn test_header_validation() {
-        let valid = IndexHeader::new(100, 1000, 10000, 10.0, 30.0, 7.0);
+        let valid = IndexHeader::new(
+            100,
+            1000,
+            10000,
+            10.0,
+            30.0,
+            7.0,
+            8,
+            DEFAULT_HASH_BINS_PER_DIM,
+        );
         assert!(valid.validate().is_ok());
 
         let mut invalid = valid;

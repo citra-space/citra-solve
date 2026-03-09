@@ -1,5 +1,8 @@
 //! Bayesian verification of match hypotheses.
 
+use std::cmp::Ordering;
+use std::collections::HashSet;
+
 use super::hypothesis::Hypothesis;
 use crate::catalog::Index;
 use crate::core::math;
@@ -171,6 +174,14 @@ pub struct VerifyResult {
     pub num_expected: usize,
     /// RMS residual in pixels.
     pub rms_residual_pixels: f64,
+    /// Median residual in pixels.
+    pub median_residual_pixels: f64,
+    /// Fraction of detected stars that were matched.
+    pub detected_coverage: f64,
+    /// Fraction of expected catalog stars that were matched.
+    pub expected_coverage: f64,
+    /// Brightness-rank consistency between detected and catalog matches [0, 1].
+    pub brightness_consistency: f64,
     /// Individual residuals for each matched star.
     pub residuals: Vec<f64>,
 }
@@ -209,21 +220,66 @@ pub fn verify_hypothesis_with_index(
 ) -> VerifyResult {
     let wcs = &hypothesis.wcs;
 
-    // Find all catalog stars that should be in the field of view
-    let expected_stars = find_stars_in_fov(index, wcs, image_width, image_height, catalog_index);
+    // Find expected catalog stars and cap to the brightest subset so wide-FOV
+    // fields are not dominated by faint expected stars that are unlikely to be
+    // detected in practice.
+    let mut expected_stars = rank_and_cap_expected_stars(
+        find_stars_in_fov(index, wcs, image_width, image_height, catalog_index),
+        detected_stars.len(),
+    );
+    // Ensure the seed stars that produced the hypothesis are retained in the
+    // expected set even when brightness capping truncates the cone query.
+    for (_, cat_star) in &hypothesis.star_matches {
+        if !expected_stars.iter().any(|s| s.id == cat_star.id) {
+            expected_stars.push(*cat_star);
+        }
+    }
 
     // Match detected stars to expected catalog stars
-    let mut matched = Vec::new();
+    let mut matched: Vec<(usize, CatalogStar)> = Vec::new();
     let mut residuals = Vec::new();
     let mut used_detected = vec![false; detected_stars.len()];
     let mut candidate_indices = Vec::new();
+    let mut seeded_catalog_ids: HashSet<u32> = HashSet::new();
 
-    // Greedy matching: for each expected star, find closest unmatched detected star
-    for (cat_idx, cat_star) in expected_stars.iter().enumerate() {
-        // Project catalog star to pixel coordinates
+    // Seed verification with the 4-star hypothesis correspondences. This
+    // bootstraps robust hypotheses while still requiring additional support
+    // in later acceptance logic.
+    let seed_max_dist = config.max_match_distance_pixels * 2.0;
+    for (det_idx, cat_star) in &hypothesis.star_matches {
+        if *det_idx >= detected_stars.len() || used_detected[*det_idx] {
+            continue;
+        }
+        let det_star = &detected_stars[*det_idx];
         let (pred_x, pred_y) = wcs.sky_to_pixel(&cat_star.position);
+        let dx = det_star.x - pred_x;
+        let dy = det_star.y - pred_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist <= seed_max_dist {
+            matched.push((*det_idx, *cat_star));
+            residuals.push(dist);
+            used_detected[*det_idx] = true;
+            seeded_catalog_ids.insert(cat_star.id);
+        }
+    }
 
-        // Skip if outside image
+    #[derive(Debug, Clone, Copy)]
+    struct MatchCandidate {
+        det_idx: usize,
+        cat_idx: usize,
+        distance: f64,
+    }
+
+    // Build candidate pair list and solve one-to-one assignment greedily by
+    // smallest residual. This is more stable than catalog-first greedy in
+    // crowded regions and increases inlier retention for noisy detections.
+    let mut pair_candidates: Vec<MatchCandidate> = Vec::new();
+    for (cat_idx, cat_star) in expected_stars.iter().enumerate() {
+        if seeded_catalog_ids.contains(&cat_star.id) {
+            continue;
+        }
+
+        let (pred_x, pred_y) = wcs.sky_to_pixel(&cat_star.position);
         if pred_x < 0.0
             || pred_x >= image_width as f64
             || pred_y < 0.0
@@ -231,10 +287,6 @@ pub fn verify_hypothesis_with_index(
         {
             continue;
         }
-
-        // Find closest unmatched detected star
-        let mut best_dist = f64::MAX;
-        let mut best_idx = None;
 
         if let Some(spatial_index) = detected_index {
             spatial_index.nearby_indices(pred_x, pred_y, &mut candidate_indices);
@@ -246,9 +298,12 @@ pub fn verify_hypothesis_with_index(
                 let dx = det_star.x - pred_x;
                 let dy = det_star.y - pred_y;
                 let dist = (dx * dx + dy * dy).sqrt();
-                if dist < best_dist && dist < config.max_match_distance_pixels {
-                    best_dist = dist;
-                    best_idx = Some(*det_idx);
+                if dist <= config.max_match_distance_pixels {
+                    pair_candidates.push(MatchCandidate {
+                        det_idx: *det_idx,
+                        cat_idx,
+                        distance: dist,
+                    });
                 }
             }
         } else {
@@ -260,23 +315,47 @@ pub fn verify_hypothesis_with_index(
                 let dx = det_star.x - pred_x;
                 let dy = det_star.y - pred_y;
                 let dist = (dx * dx + dy * dy).sqrt();
-
-                if dist < best_dist && dist < config.max_match_distance_pixels {
-                    best_dist = dist;
-                    best_idx = Some(det_idx);
+                if dist <= config.max_match_distance_pixels {
+                    pair_candidates.push(MatchCandidate {
+                        det_idx,
+                        cat_idx,
+                        distance: dist,
+                    });
                 }
             }
         }
+    }
 
-        if let Some(det_idx) = best_idx {
-            matched.push((det_idx, cat_idx));
-            residuals.push(best_dist);
-            used_detected[det_idx] = true;
+    pair_candidates.sort_by(|a, b| {
+        a.distance
+            .partial_cmp(&b.distance)
+            .unwrap_or(Ordering::Equal)
+    });
+
+    let mut used_catalog = vec![false; expected_stars.len()];
+    for (idx, cat_star) in expected_stars.iter().enumerate() {
+        if seeded_catalog_ids.contains(&cat_star.id) {
+            used_catalog[idx] = true;
         }
+    }
+
+    for cand in pair_candidates {
+        if used_detected[cand.det_idx] || used_catalog[cand.cat_idx] {
+            continue;
+        }
+        used_detected[cand.det_idx] = true;
+        used_catalog[cand.cat_idx] = true;
+        matched.push((cand.det_idx, expected_stars[cand.cat_idx]));
+        residuals.push(cand.distance);
     }
 
     let num_matched = matched.len();
     let num_expected = expected_stars.len();
+    let (effective_detected, effective_expected) =
+        effective_population_sizes(num_matched, detected_stars.len(), num_expected);
+    let expected_coverage = num_matched as f64 / effective_expected as f64;
+    let detected_coverage = num_matched as f64 / effective_detected as f64;
+    let brightness_consistency = compute_brightness_consistency(detected_stars, &matched);
 
     // Compute RMS residual
     let rms_residual = if residuals.is_empty() {
@@ -285,6 +364,7 @@ pub fn verify_hypothesis_with_index(
         let sum_sq: f64 = residuals.iter().map(|r| r * r).sum();
         (sum_sq / residuals.len() as f64).sqrt()
     };
+    let median_residual = median(&residuals).unwrap_or(f64::MAX);
 
     // Compute log-odds using Bayesian framework
     let log_odds = compute_log_odds(
@@ -293,24 +373,102 @@ pub fn verify_hypothesis_with_index(
         num_expected,
         &residuals,
         config,
+        image_width,
+        image_height,
     );
 
     let mut updated_hypothesis = hypothesis.clone();
     updated_hypothesis.log_odds = log_odds;
 
     // Update star matches to include all verified matches
-    updated_hypothesis.star_matches = matched
-        .iter()
-        .map(|&(det_idx, cat_idx)| (det_idx, expected_stars[cat_idx]))
-        .collect();
+    updated_hypothesis.star_matches = matched.clone();
 
     VerifyResult {
         hypothesis: updated_hypothesis,
         num_matched,
         num_expected,
         rms_residual_pixels: rms_residual,
+        median_residual_pixels: median_residual,
+        detected_coverage,
+        expected_coverage,
+        brightness_consistency,
         residuals,
     }
+}
+
+fn compute_brightness_consistency(
+    detected_stars: &[DetectedStar],
+    matched: &[(usize, CatalogStar)],
+) -> f64 {
+    let n = matched.len();
+    if n < 3 {
+        return 0.5;
+    }
+
+    // Rank by detected brightness (flux descending).
+    let mut by_detected: Vec<(usize, f64)> = matched
+        .iter()
+        .enumerate()
+        .map(|(mi, (det_idx, _))| (mi, detected_stars[*det_idx].flux))
+        .collect();
+    by_detected.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+    let mut rank_detected = vec![0usize; n];
+    for (rank, (mi, _)) in by_detected.iter().enumerate() {
+        rank_detected[*mi] = rank;
+    }
+
+    // Rank by catalog brightness (magnitude ascending).
+    let mut by_catalog: Vec<(usize, f32)> = matched
+        .iter()
+        .enumerate()
+        .map(|(mi, (_, cat))| (mi, cat.magnitude))
+        .collect();
+    by_catalog.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut rank_catalog = vec![0usize; n];
+    for (rank, (mi, _)) in by_catalog.iter().enumerate() {
+        rank_catalog[*mi] = rank;
+    }
+
+    let mut sum_d2 = 0.0f64;
+    for i in 0..n {
+        let d = rank_detected[i] as f64 - rank_catalog[i] as f64;
+        sum_d2 += d * d;
+    }
+
+    let n_f = n as f64;
+    let denom = n_f * (n_f * n_f - 1.0);
+    if denom <= 1e-9 {
+        return 0.5;
+    }
+    let rho = 1.0 - (6.0 * sum_d2) / denom;
+    ((rho + 1.0) * 0.5).clamp(0.0, 1.0)
+}
+
+fn rank_and_cap_expected_stars(
+    mut stars: Vec<CatalogStar>,
+    num_detected: usize,
+) -> Vec<CatalogStar> {
+    if stars.is_empty() {
+        return stars;
+    }
+
+    stars.sort_by(|a, b| {
+        a.magnitude
+            .partial_cmp(&b.magnitude)
+            .unwrap_or(Ordering::Equal)
+    });
+
+    // Keep a moderate over-complete set of bright stars. Very large expected
+    // sets (wide fields) destabilize verification score calibration and slow
+    // matching while not increasing solve robustness.
+    let cap = (num_detected.saturating_mul(3)).clamp(36, 360);
+    if stars.len() > cap {
+        stars.truncate(cap);
+    }
+
+    stars
 }
 
 /// Find catalog stars expected to be visible in the field of view.
@@ -369,37 +527,97 @@ fn compute_log_odds(
     num_expected: usize,
     residuals: &[f64],
     config: &VerifyConfig,
+    image_width: u32,
+    image_height: u32,
 ) -> f64 {
     if num_matched < 4 {
         return f64::NEG_INFINITY;
     }
 
-    let sigma = config.position_sigma_pixels;
+    let sigma = config.position_sigma_pixels.max(0.5);
+    let fp_rate = config.false_positive_rate.clamp(0.01, 0.85);
+    let max_match = config.max_match_distance_pixels.max(1.0);
+    let image_area = (image_width.max(1) as f64) * (image_height.max(1) as f64);
 
-    // Use median squared normalized residual (robust to outliers)
+    let (effective_detected, effective_expected) =
+        effective_population_sizes(num_matched, num_detected, num_expected);
+
+    // Robust residual quality term (median over squared normalized residuals).
     let mut sq_normalized: Vec<f64> = residuals.iter().map(|r| (r / sigma).powi(2)).collect();
-    sq_normalized.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sq_normalized.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     let median_sq = sq_normalized[sq_normalized.len() / 2];
-
-    // Residual quality score: tolerant near 1-sigma, then quickly penalize.
     let residual_score = if median_sq < 1.5 {
-        -3.0 * median_sq
+        -2.1 * median_sq
     } else {
-        -4.5 - 8.0 * (median_sq - 1.5)
+        -3.15 - 5.8 * (median_sq - 1.5)
     };
 
-    // Match count bonus (log scale to avoid dominating)
-    let count_score = (num_matched as f64).ln() * 15.0;
+    // Match support and coverage terms.
+    let count_score = (num_matched as f64).ln() * 18.0;
+    let match_fraction_detected = num_matched as f64 / effective_detected.max(1) as f64;
+    let match_fraction_expected = num_matched as f64 / effective_expected.max(1) as f64;
+    let coverage_score = 22.0 * match_fraction_detected + 30.0 * match_fraction_expected;
 
-    // Match coverage bonuses.
-    let match_fraction_detected = num_matched as f64 / num_detected.max(1) as f64;
-    let match_fraction_expected = num_matched as f64 / num_expected.max(1) as f64;
-    let coverage_score = 22.0 * match_fraction_detected + 34.0 * match_fraction_expected;
+    // Mild penalties for weak support and very loose residual concentration.
+    let miss_penalty = -7.5 * (1.0 - match_fraction_expected).powf(1.15);
+    let false_penalty = -4.5 * fp_rate * (1.0 - match_fraction_detected).powf(1.0);
+    let concentration_penalty = if let Some(med) = median(residuals) {
+        -1.3 * (med / max_match).powi(2)
+    } else {
+        -20.0
+    };
 
-    // Bounded penalty for weak expected-star coverage.
-    let miss_penalty = -12.0 * (1.0 - match_fraction_expected).powf(1.3);
+    // Tetra3-style resilience: reward inlier concentration but avoid letting
+    // this dominate when only a handful of stars are matched.
+    let inlier_ratio = residuals
+        .iter()
+        .filter(|&&r| r <= sigma * 2.0)
+        .count() as f64
+        / num_matched as f64;
+    let inlier_score = 6.0 * (inlier_ratio - 0.50);
 
-    residual_score + count_score + coverage_score + miss_penalty
+    // Random-alignment term: approximate chance of a spurious match inside the
+    // spatial tolerance window. This keeps low-support hypotheses in check.
+    let p_rand_single = ((std::f64::consts::PI * max_match * max_match) / image_area)
+        .clamp(1e-9, 0.30);
+    let random_alignment_score = ((num_matched as f64) * p_rand_single.ln().abs()) * 0.20;
+
+    residual_score
+        + count_score
+        + coverage_score
+        + miss_penalty
+        + false_penalty
+        + concentration_penalty
+        + inlier_score
+        + random_alignment_score
+}
+
+fn effective_population_sizes(
+    num_matched: usize,
+    num_detected: usize,
+    num_expected: usize,
+) -> (usize, usize) {
+    // Evaluate against a bounded subset of detections and expected stars.
+    // This keeps log-odds stable when wide-field catalog queries return many
+    // stars that are below the practical detection limit.
+    let effective_detected = num_detected
+        .min(num_matched.saturating_mul(5).saturating_add(12))
+        .max(num_matched)
+        .max(1);
+    let effective_expected = num_expected
+        .min(num_detected.saturating_add(num_matched).saturating_add(6))
+        .max(num_matched)
+        .max(1);
+    (effective_detected, effective_expected)
+}
+
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut tmp = values.to_vec();
+    tmp.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    Some(tmp[tmp.len() / 2])
 }
 
 #[cfg(test)]

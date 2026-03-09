@@ -11,6 +11,8 @@ pub struct Quad {
     pub ratios: [f64; 5],
     /// The longest edge distance (in pixels), used for scale estimation.
     pub max_edge_pixels: f64,
+    /// Canonical tetra signature [x1, y1, x2, y2] for collision-resistant matching.
+    pub tetra_signature: [f64; 4],
 }
 
 impl Quad {
@@ -24,6 +26,12 @@ impl Quad {
     #[inline]
     pub fn ratios(&self) -> &[f64; 5] {
         &self.ratios
+    }
+
+    /// Get canonical tetra signature values.
+    #[inline]
+    pub fn tetra(&self) -> &[f64; 4] {
+        &self.tetra_signature
     }
 }
 
@@ -60,7 +68,9 @@ pub fn generate_quads(stars: &[DetectedStar], max_stars: usize, max_quads: usize
             for j in (i + 1)..n {
                 for k in (j + 1)..n {
                     for l in (k + 1)..n {
-                        if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
+                        if let Some(quad) =
+                            make_quad_from_indices(i, j, k, l, stars, &distances)
+                        {
                             quads.push(quad);
                         }
                     }
@@ -93,7 +103,9 @@ pub fn generate_quads(stars: &[DetectedStar], max_stars: usize, max_quads: usize
                         break;
                     }
                     if count % stride == 0 {
-                        if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
+                        if let Some(quad) =
+                            make_quad_from_indices(i, j, k, l, stars, &distances)
+                        {
                             quads.push(quad);
                         }
                     }
@@ -175,7 +187,9 @@ pub fn generate_quads_brightness_priority(
                             }
                         }
 
-                        if let Some(quad) = make_quad_from_indices(i, j, k, l, &distances) {
+                        if let Some(quad) =
+                            make_quad_from_indices(i, j, k, l, stars, &distances)
+                        {
                             // Check edge size constraints
                             if quad.max_edge_pixels >= min_edge_pixels
                                 && quad.max_edge_pixels <= max_edge_pixels
@@ -199,6 +213,7 @@ fn make_quad_from_indices(
     j: usize,
     k: usize,
     l: usize,
+    stars: &[DetectedStar],
     distances: &[Vec<f64>],
 ) -> Option<Quad> {
     // Get all 6 pairwise distances
@@ -227,6 +242,13 @@ fn make_quad_from_indices(
     // Sort to create rotation/reflection invariant representation
     edge_distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
+    // Reject highly degenerate quads (near-collinear/duplicate-star geometry).
+    // Tetra3-style indexing is significantly more robust with well-conditioned
+    // patterns because they hash more uniquely under centroid noise.
+    if edge_distances[0] < 0.04 || edge_distances[1] < 0.07 || edge_distances[2] < 0.10 {
+        return None;
+    }
+
     // Take first 5 ratios (the 6th is always ~1.0)
     let ratios = [
         edge_distances[0],
@@ -236,10 +258,19 @@ fn make_quad_from_indices(
         edge_distances[4],
     ];
 
+    let points = [
+        (stars[i].x, stars[i].y),
+        (stars[j].x, stars[j].y),
+        (stars[k].x, stars[k].y),
+        (stars[l].x, stars[l].y),
+    ];
+    let tetra_signature = crate::pattern::tetra::canonical_tetra_signature(&points)?;
+
     Some(Quad {
         star_indices: [i, j, k, l],
         ratios,
         max_edge_pixels: max_dist,
+        tetra_signature,
     })
 }
 

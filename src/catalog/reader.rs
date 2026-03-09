@@ -7,7 +7,7 @@ use std::path::Path;
 use bytemuck::from_bytes;
 
 use super::error::CatalogError;
-use super::index::{IndexHeader, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION};
+use super::index::{IndexHeader, HEADER_SIZE};
 use super::star::{PackedPattern, PackedStar};
 
 /// Streaming index reader for systems without memory mapping.

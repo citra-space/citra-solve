@@ -86,6 +86,12 @@ fn main() -> ExitCode {
                         args[i].parse().unwrap_or(config.max_patterns_per_star);
                 }
             }
+            "--scale-bands" => {
+                i += 1;
+                if i < args.len() {
+                    config.num_scale_bands = args[i].parse().unwrap_or(config.num_scale_bands);
+                }
+            }
             "--synthetic" => {
                 // Generate synthetic catalog for testing
                 return build_synthetic_index(output_path, config);
@@ -120,6 +126,7 @@ fn main() -> ExitCode {
     println!("Mag limit: {:.1}", config.mag_limit);
     println!("Max stars: {}", config.max_stars);
     println!("Patterns/star: {}", config.max_patterns_per_star);
+    println!("Scale bands: {}", config.num_scale_bands);
     println!("Hash bins: {}", config.num_bins);
     println!();
 
@@ -149,6 +156,7 @@ fn print_usage() {
     println!("  --mag-limit <MAG>       Magnitude limit [default: 8.0]");
     println!("  --max-stars <N>         Max stars for pattern generation [default: 8000]");
     println!("  --patterns-per-star <N> Max patterns per star [default: 1500]");
+    println!("  --scale-bands <N>       Log-scale pattern bands [default: 8]");
     println!("  --num-bins <N>          Hash bins for pattern table [default: 1000000]");
     println!("  --synthetic             Generate synthetic test catalog");
     println!("  -h, --help              Show this help message");

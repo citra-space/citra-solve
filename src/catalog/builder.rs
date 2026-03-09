@@ -8,9 +8,8 @@ use std::path::Path;
 use bytemuck::bytes_of;
 
 use super::error::CatalogError;
-use super::index::{IndexHeader, INDEX_MAGIC, INDEX_VERSION};
+use super::index::{IndexHeader, DEFAULT_HASH_BINS_PER_DIM};
 use super::star::{PackedPattern, PackedStar};
-use crate::core::math::angular_separation;
 use crate::core::types::{RaDec, Vec3};
 
 /// Configuration for building an index.
@@ -28,6 +27,8 @@ pub struct BuildConfig {
     pub max_stars: usize,
     /// Maximum patterns per star (to limit index size).
     pub max_patterns_per_star: usize,
+    /// Number of logarithmic angular scale bands.
+    pub num_scale_bands: u8,
 }
 
 impl Default for BuildConfig {
@@ -41,6 +42,7 @@ impl Default for BuildConfig {
             // Memory-safe medium-density default tuned for high recall without
             // pathological bin density or multi-gigabyte indices.
             max_patterns_per_star: 1500,
+            num_scale_bands: 8,
         }
     }
 }
@@ -143,7 +145,7 @@ impl IndexBuilder {
         // For each (i,j) pair, limit the number of (k,l) combinations to avoid
         // exhausting the pattern budget on a single j neighbor.
         println!("  Generating patterns...");
-        let max_per_pair = 20; // Max patterns for each (i,j) pair
+        let max_per_pair = 40; // Max patterns for each (i,j) pair
 
         for i in 0..num_stars {
             if i % 500 == 0 {
@@ -156,8 +158,22 @@ impl IndexBuilder {
 
             // Get neighbors of star i with index > i (to avoid duplicates)
             let mut ni: Vec<usize> = neighbors[i].iter().filter(|&&j| j > i).cloned().collect();
-            // Sort by index (= brightness order since stars are sorted by magnitude)
-            ni.sort();
+            // Sort by angular distance from i so sampled quads are geometrically
+            // local and diverse (tetra3-style robustness to missing/false stars).
+            ni.sort_by(|a, b| {
+                let da = unit_vectors[i].angle_to(&unit_vectors[*a]);
+                let db = unit_vectors[i].angle_to(&unit_vectors[*b]);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if ni.len() > 140 {
+                let mut reduced = ni[..100].to_vec();
+                let tail = &ni[100..];
+                let stride = (tail.len() / 40).max(1);
+                for idx in tail.iter().step_by(stride).take(40) {
+                    reduced.push(*idx);
+                }
+                ni = reduced;
+            }
 
             if ni.len() < 3 {
                 continue;
@@ -178,8 +194,7 @@ impl IndexBuilder {
 
                 let mut pair_count = 0;
 
-                // Use a stride for k to sample diverse combinations
-                let k_stride = ((ni_len - ji) / 40).max(1);
+                let k_stride = 1usize;
 
                 let mut ki = ji + 1;
                 while ki < ni_len {
@@ -201,8 +216,7 @@ impl IndexBuilder {
                         continue;
                     }
 
-                    // Use a stride for l too
-                    let l_stride = ((ni_len - ki) / 20).max(1);
+                    let l_stride = 1usize;
 
                     let mut li = ki + 1;
                     while li < ni_len {
@@ -267,6 +281,13 @@ impl IndexBuilder {
                             }
                             distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
+                            // Filter degenerate patterns to reduce hash collisions
+                            // and improve robustness to false/missing detections.
+                            if distances[0] < 0.04 || distances[1] < 0.07 || distances[2] < 0.10 {
+                                li += l_stride;
+                                continue;
+                            }
+
                             let ratios: [f64; 5] = [
                                 distances[0],
                                 distances[1],
@@ -274,11 +295,29 @@ impl IndexBuilder {
                                 distances[3],
                                 distances[4],
                             ];
+                            let tetra_signature =
+                                crate::pattern::tetra::canonical_tetra_signature(&[
+                                    proj_i, proj_j, proj_k, proj_l,
+                                ]);
+                            let Some(tetra_signature) = tetra_signature else {
+                                li += l_stride;
+                                continue;
+                            };
 
-                            let hash_bin = compute_hash(&ratios, self.config.num_bins);
+                            let scale_band = compute_scale_band(
+                                max_ang,
+                                fov_min_rad,
+                                fov_max_rad,
+                                self.config.num_scale_bands,
+                            );
+                            let hash_bin =
+                                compute_hash(&ratios, &tetra_signature, self.config.num_bins);
                             let pattern = PackedPattern::new(
                                 [i as u16, j as u16, k as u16, l as u16],
                                 ratios,
+                                tetra_signature,
+                                scale_band,
+                                max_ang.to_degrees(),
                             );
 
                             bins.entry(hash_bin).or_default().push(pattern);
@@ -316,6 +355,8 @@ impl IndexBuilder {
             self.config.fov_min_deg,
             self.config.fov_max_deg,
             self.config.mag_limit,
+            self.config.num_scale_bands.max(1),
+            DEFAULT_HASH_BINS_PER_DIM,
         );
         writer.write_all(bytes_of(&header))?;
 
@@ -388,73 +429,39 @@ pub struct BuildStats {
     pub avg_patterns_per_bin: f64,
 }
 
-/// Compute the hash bin for a set of edge ratios.
-fn compute_hash(ratios: &[f64; 5], num_bins: u32) -> u32 {
-    // Use a simple multiplicative hash combining all ratios
-    const BINS_PER_DIM: u32 = 100;
-
-    let mut hash: u64 = 0;
-    let mut multiplier: u64 = 1;
-
-    for &r in ratios.iter() {
-        let bin = ((r * BINS_PER_DIM as f64) as u64).min(BINS_PER_DIM as u64 - 1);
-        hash += bin * multiplier;
-        multiplier *= BINS_PER_DIM as u64;
+fn compute_scale_band(max_angle_rad: f64, fov_min_rad: f64, fov_max_rad: f64, num_bands: u8) -> u8 {
+    if num_bands <= 1 {
+        return 0;
     }
 
-    (hash % num_bins as u64) as u32
+    let min_scale = fov_min_rad.max(1e-6);
+    let max_scale = fov_max_rad.max(min_scale * 1.01);
+    let angle = max_angle_rad.clamp(min_scale, max_scale);
+    let ratio = (angle / min_scale).ln() / (max_scale / min_scale).ln();
+    let idx = (ratio.clamp(0.0, 0.999_999) * num_bands as f64).floor() as u8;
+    idx.min(num_bands.saturating_sub(1))
+}
+
+/// Compute the hash bin for a pattern.
+fn compute_hash(ratios: &[f64; 5], tetra_signature: &[f64; 4], num_bins: u32) -> u32 {
+    crate::pattern::hash::compute_hash(ratios, tetra_signature, num_bins)
 }
 
 /// Compute hash with tolerance, returning all bins that might match.
-pub fn compute_hash_with_tolerance(ratios: &[f64; 5], num_bins: u32, tolerance: f64) -> Vec<u32> {
-    const BINS_PER_DIM: u32 = 100;
-    let delta = (tolerance * BINS_PER_DIM as f64).ceil() as i32;
-
-    let mut hashes = Vec::new();
-    let centers: Vec<i32> = ratios
-        .iter()
-        .map(|&r| (r * BINS_PER_DIM as f64) as i32)
-        .collect();
-
-    // Generate all combinations within tolerance
-    fn recurse(
-        centers: &[i32],
-        idx: usize,
-        current: &mut [u32; 5],
-        delta: i32,
-        num_bins: u32,
-        hashes: &mut Vec<u32>,
-    ) {
-        const BINS_PER_DIM: u32 = 100;
-
-        if idx == 5 {
-            let mut hash: u64 = 0;
-            let mut multiplier: u64 = 1;
-            for &bin in current.iter() {
-                hash += bin as u64 * multiplier;
-                multiplier *= BINS_PER_DIM as u64;
-            }
-            hashes.push((hash % num_bins as u64) as u32);
-            return;
-        }
-
-        let center = centers[idx];
-        let min_bin = (center - delta).max(0) as u32;
-        let max_bin = (center + delta).min(BINS_PER_DIM as i32 - 1) as u32;
-
-        for bin in min_bin..=max_bin {
-            current[idx] = bin;
-            recurse(centers, idx + 1, current, delta, num_bins, hashes);
-        }
-    }
-
-    let mut current = [0u32; 5];
-    recurse(&centers, 0, &mut current, delta, num_bins, &mut hashes);
-
-    // Remove duplicates
-    hashes.sort();
-    hashes.dedup();
-    hashes
+pub fn compute_hash_with_tolerance(
+    ratios: &[f64; 5],
+    tetra_signature: &[f64; 4],
+    num_bins: u32,
+    ratio_tolerance: f64,
+    tetra_tolerance: f64,
+) -> Vec<u32> {
+    crate::pattern::hash::query_hash_bins(
+        ratios,
+        tetra_signature,
+        num_bins,
+        ratio_tolerance,
+        tetra_tolerance,
+    )
 }
 
 #[cfg(test)]
@@ -464,20 +471,22 @@ mod tests {
     #[test]
     fn test_compute_hash_deterministic() {
         let ratios = [0.1, 0.2, 0.3, 0.4, 0.5];
-        let h1 = compute_hash(&ratios, 1_000_000);
-        let h2 = compute_hash(&ratios, 1_000_000);
+        let tetra = [0.1, 0.2, 0.8, 0.3];
+        let h1 = compute_hash(&ratios, &tetra, 1_000_000);
+        let h2 = compute_hash(&ratios, &tetra, 1_000_000);
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_compute_hash_with_tolerance() {
         let ratios = [0.5, 0.5, 0.5, 0.5, 0.5];
-        let hashes = compute_hash_with_tolerance(&ratios, 1_000_000, 0.01);
+        let tetra = [0.2, 0.2, 0.8, 0.3];
+        let hashes = compute_hash_with_tolerance(&ratios, &tetra, 1_000_000, 0.01, 0.02);
         // Should return multiple bins
         assert!(hashes.len() > 1);
 
         // Original hash should be included
-        let original = compute_hash(&ratios, 1_000_000);
+        let original = compute_hash(&ratios, &tetra, 1_000_000);
         assert!(hashes.contains(&original));
     }
 }
