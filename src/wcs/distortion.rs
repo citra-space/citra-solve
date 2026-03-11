@@ -294,6 +294,12 @@ pub fn fit_sip_distortion(
         return SipDistortion::default();
     }
 
+    // Normalize coordinates to improve conditioning of higher-order terms.
+    let coord_scale = data
+        .iter()
+        .fold(0.0f64, |acc, (u, v, _, _)| acc.max(u.abs()).max(v.abs()))
+        .max(64.0);
+
     // Build design matrix A and target vectors b_x, b_y
     let mut a_mat = vec![vec![0.0; num_terms]; n];
     let mut b_x = vec![0.0; n];
@@ -303,12 +309,14 @@ pub fn fit_sip_distortion(
         b_x[row] = *res_x;
         b_y[row] = *res_y;
 
-        // Fill polynomial terms
+        // Fill polynomial terms (normalized coordinates)
+        let u_n = *u / coord_scale;
+        let v_n = *v / coord_scale;
         let mut col = 0;
         for total_order in 2..=order {
             for i in 0..=total_order {
                 let j = total_order - i;
-                let term = u.powi(i as i32) * v.powi(j as i32);
+                let term = u_n.powi(i as i32) * v_n.powi(j as i32);
                 a_mat[row][col] = term;
                 col += 1;
             }
@@ -316,8 +324,8 @@ pub fn fit_sip_distortion(
     }
 
     // Solve least squares: A^T A x = A^T b using normal equations
-    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms);
-    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms);
+    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms, 1e-8);
+    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms, 1e-8);
 
     // Build SIP distortion from coefficients
     let mut sip = SipDistortion::new(order);
@@ -326,11 +334,12 @@ pub fn fit_sip_distortion(
     for total_order in 2..=order {
         for i in 0..=total_order {
             let j = total_order - i;
+            let den = coord_scale.powi((i + j) as i32);
             if let Some(c) = coeffs_x.as_ref() {
-                sip.set_a(i, j, c[col]);
+                sip.set_a(i, j, c[col] / den);
             }
             if let Some(c) = coeffs_y.as_ref() {
-                sip.set_b(i, j, c[col]);
+                sip.set_b(i, j, c[col] / den);
             }
             col += 1;
         }
@@ -338,6 +347,13 @@ pub fn fit_sip_distortion(
 
     // Compute inverse coefficients (AP, BP) by fitting reverse residuals
     fit_inverse_coefficients(&mut sip, detected_pixels, catalog_sky, wcs);
+
+    // Keep SIP only when it materially improves matched-point residuals.
+    let rms_before = sip_fit_rms(detected_pixels, catalog_sky, wcs, None);
+    let rms_after = sip_fit_rms(detected_pixels, catalog_sky, wcs, Some(&sip));
+    if !rms_after.is_finite() || rms_after >= rms_before * 0.995 {
+        return SipDistortion::default();
+    }
 
     sip
 }
@@ -352,7 +368,12 @@ fn count_sip_terms(max_order: usize) -> usize {
 }
 
 /// Solve normal equations A^T A x = A^T b using Cholesky-like approach.
-fn solve_normal_equations(a_mat: &[Vec<f64>], b: &[f64], num_vars: usize) -> Option<Vec<f64>> {
+fn solve_normal_equations(
+    a_mat: &[Vec<f64>],
+    b: &[f64],
+    num_vars: usize,
+    ridge_rel: f64,
+) -> Option<Vec<f64>> {
     let n = a_mat.len();
     if n == 0 || num_vars == 0 {
         return None;
@@ -368,6 +389,18 @@ fn solve_normal_equations(a_mat: &[Vec<f64>], b: &[f64], num_vars: usize) -> Opt
             }
             ata[i][j] = sum;
         }
+    }
+
+    // Diagonal regularization for numerical stability.
+    let mean_diag = ata
+        .iter()
+        .enumerate()
+        .map(|(i, row)| row[i].abs())
+        .sum::<f64>()
+        / num_vars as f64;
+    let ridge = (mean_diag * ridge_rel).max(1e-14);
+    for (i, row) in ata.iter_mut().enumerate().take(num_vars) {
+        row[i] += ridge;
     }
 
     // Compute A^T b
@@ -460,7 +493,7 @@ fn fit_inverse_coefficients(
     // u' = u + A(u,v), so u = u' - A(u,v) ≈ u' + AP(u', v')
     let mut data: Vec<(f64, f64, f64, f64)> = Vec::new();
 
-    for (det, sky) in detected_pixels.iter().zip(catalog_sky.iter()) {
+    for (det, _sky) in detected_pixels.iter().zip(catalog_sky.iter()) {
         let u = det.0 - crpix.0;
         let v = det.1 - crpix.1;
 
@@ -494,22 +527,70 @@ fn fit_inverse_coefficients(
         }
     }
 
-    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms);
-    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms);
+    let coord_scale = data
+        .iter()
+        .fold(0.0f64, |acc, (u, v, _, _)| acc.max(u.abs()).max(v.abs()))
+        .max(64.0);
+
+    for (row, (u, v, _, _)) in data.iter().enumerate() {
+        let u_n = *u / coord_scale;
+        let v_n = *v / coord_scale;
+        let mut col = 0;
+        for total_order in 2..=order {
+            for i in 0..=total_order {
+                let j = total_order - i;
+                a_mat[row][col] = u_n.powi(i as i32) * v_n.powi(j as i32);
+                col += 1;
+            }
+        }
+    }
+
+    let coeffs_x = solve_normal_equations(&a_mat, &b_x, num_terms, 1e-8);
+    let coeffs_y = solve_normal_equations(&a_mat, &b_y, num_terms, 1e-8);
 
     let mut col = 0;
     for total_order in 2..=order {
         for i in 0..=total_order {
             let j = total_order - i;
+            let den = coord_scale.powi((i + j) as i32);
             if let Some(c) = coeffs_x.as_ref() {
-                sip.set_ap(i, j, c[col]);
+                sip.set_ap(i, j, c[col] / den);
             }
             if let Some(c) = coeffs_y.as_ref() {
-                sip.set_bp(i, j, c[col]);
+                sip.set_bp(i, j, c[col] / den);
             }
             col += 1;
         }
     }
+}
+
+fn sip_fit_rms(
+    detected_pixels: &[(f64, f64)],
+    catalog_sky: &[crate::core::types::RaDec],
+    wcs: &super::projection::Wcs,
+    sip: Option<&SipDistortion>,
+) -> f64 {
+    if detected_pixels.is_empty() || detected_pixels.len() != catalog_sky.len() {
+        return f64::INFINITY;
+    }
+
+    let crpix = wcs.crpix();
+    let mut sum_sq = 0.0;
+    for (det, sky) in detected_pixels.iter().zip(catalog_sky.iter()) {
+        let (pred_x, pred_y) = wcs.sky_to_pixel(sky);
+        let (corr_x, corr_y) = if let Some(s) = sip {
+            let u = det.0 - crpix.0;
+            let v = det.1 - crpix.1;
+            let (u_corr, v_corr) = s.apply_forward(u, v);
+            (crpix.0 + u_corr, crpix.1 + v_corr)
+        } else {
+            *det
+        };
+        let dx = pred_x - corr_x;
+        let dy = pred_y - corr_y;
+        sum_sq += dx * dx + dy * dy;
+    }
+    (sum_sq / detected_pixels.len() as f64).sqrt()
 }
 
 #[cfg(test)]

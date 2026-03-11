@@ -68,9 +68,7 @@ pub fn generate_quads(stars: &[DetectedStar], max_stars: usize, max_quads: usize
             for j in (i + 1)..n {
                 for k in (j + 1)..n {
                     for l in (k + 1)..n {
-                        if let Some(quad) =
-                            make_quad_from_indices(i, j, k, l, stars, &distances)
-                        {
+                        if let Some(quad) = make_quad_from_indices(i, j, k, l, stars, &distances) {
                             quads.push(quad);
                         }
                     }
@@ -103,9 +101,7 @@ pub fn generate_quads(stars: &[DetectedStar], max_stars: usize, max_quads: usize
                         break;
                     }
                     if count % stride == 0 {
-                        if let Some(quad) =
-                            make_quad_from_indices(i, j, k, l, stars, &distances)
-                        {
+                        if let Some(quad) = make_quad_from_indices(i, j, k, l, stars, &distances) {
                             quads.push(quad);
                         }
                     }
@@ -187,9 +183,7 @@ pub fn generate_quads_brightness_priority(
                             }
                         }
 
-                        if let Some(quad) =
-                            make_quad_from_indices(i, j, k, l, stars, &distances)
-                        {
+                        if let Some(quad) = make_quad_from_indices(i, j, k, l, stars, &distances) {
                             // Check edge size constraints
                             if quad.max_edge_pixels >= min_edge_pixels
                                 && quad.max_edge_pixels <= max_edge_pixels

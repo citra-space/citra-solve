@@ -124,7 +124,8 @@ pub fn generate_hypotheses(
                 let scale_arcsec = wcs_full.pixel_scale_arcsec();
                 let fov_deg = scale_arcsec * image_diagonal / 3600.0;
                 if fov_deg >= 1.0 && fov_deg <= 60.0 {
-                    let full_residual = compute_match_residual(detected_stars, &full_matches, &wcs_full);
+                    let full_residual =
+                        compute_match_residual(detected_stars, &full_matches, &wcs_full);
                     if full_residual < best_score {
                         best_score = full_residual;
                         best_wcs = Some(wcs_full.clone());
@@ -140,10 +141,8 @@ pub fn generate_hypotheses(
 
             // 3-of-4 fallback for false/missing-star resilience.
             for subset in SUBSETS_3_OF_4 {
-                let subset_matches: Vec<(usize, CatalogStar)> = subset
-                    .iter()
-                    .map(|&idx| full_matches[idx])
-                    .collect();
+                let subset_matches: Vec<(usize, CatalogStar)> =
+                    subset.iter().map(|&idx| full_matches[idx]).collect();
 
                 let Some(wcs_subset) = estimate_wcs_from_matches(
                     detected_stars,

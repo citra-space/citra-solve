@@ -262,4 +262,3 @@ mod tests {
         assert_eq!(probes[0].l1_distance, 0);
     }
 }
-

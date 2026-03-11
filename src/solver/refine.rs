@@ -1,7 +1,7 @@
 //! Solution refinement using iterative least squares and SIP distortion.
 
 use crate::core::types::{CatalogStar, DetectedStar, RaDec};
-use crate::wcs::{fit_sip_distortion, SipDistortion, Wcs, WcsWithDistortion};
+use crate::wcs::{fit_sip_distortion, Wcs, WcsWithDistortion};
 
 /// Configuration for refinement.
 #[derive(Debug, Clone)]
@@ -341,27 +341,25 @@ pub fn refine_linear_wcs(
         sky.push(cat_star.position);
     }
 
-    // Use image center as reference point for better numerical stability
-    let crpix = (image_width as f64 / 2.0, image_height as f64 / 2.0);
+    // Use image center as seed for numerical stability.
+    let crpix_seed = (image_width as f64 / 2.0, image_height as f64 / 2.0);
 
     // Use initial WCS to get sky position at image center as CRVAL
     // This is more accurate than using centroid of matched stars
-    let crval = initial_wcs.pixel_to_sky(crpix.0, crpix.1);
+    let crval = initial_wcs.pixel_to_sky(crpix_seed.0, crpix_seed.1);
 
     // Precompute trig values for crval
     let sin_crval_dec = crval.dec.sin();
     let cos_crval_dec = crval.dec.cos();
 
-    // Build matrices for least squares: pixel_offset = CD * tangent_plane
-    // We solve: dx = CD11*xi + CD12*eta, dy = CD21*xi + CD22*eta
-    let mut a_mat: Vec<[f64; 2]> = Vec::new();
+    // Build matrices for least squares:
+    // x = a*xi + b*eta + tx, y = c*xi + d*eta + ty
+    // where xi/eta are tangent-plane coordinates in radians.
+    let mut a_mat: Vec<[f64; 3]> = Vec::new();
     let mut b_x: Vec<f64> = Vec::new();
     let mut b_y: Vec<f64> = Vec::new();
 
     for ((px, py), sky_pos) in pixels.iter().zip(sky.iter()) {
-        let dx = px - crpix.0;
-        let dy = py - crpix.1;
-
         // Compute tangent plane coordinates
         let delta_ra = sky_pos.ra - crval.ra;
         let sin_dec = sky_pos.dec.sin();
@@ -377,18 +375,19 @@ pub fn refine_linear_wcs(
         let xi = (cos_dec * sin_delta_ra) / denom;
         let eta = (cos_crval_dec * sin_dec - sin_crval_dec * cos_dec * cos_delta_ra) / denom;
 
-        a_mat.push([xi, eta]);
-        b_x.push(dx);
-        b_y.push(dy);
+        a_mat.push([xi, eta, 1.0]);
+        b_x.push(*px);
+        b_y.push(*py);
     }
 
     if a_mat.len() < 4 {
         return None;
     }
 
-    // Solve least squares for CD matrix (pixel/radian)
-    let (cd11, cd12) = solve_2x2_lstsq(&a_mat, &b_x)?;
-    let (cd21, cd22) = solve_2x2_lstsq(&a_mat, &b_y)?;
+    // Solve least squares for affine map from tangent plane to pixels.
+    // [a, b, tx], [c, d, ty] are in px/rad and px.
+    let (cd11, cd12, tx) = solve_3x3_lstsq(&a_mat, &b_x)?;
+    let (cd21, cd22, ty) = solve_3x3_lstsq(&a_mat, &b_y)?;
 
     // Convert from pixel/radian to degrees/pixel (WCS convention)
     let cd_det = cd11 * cd22 - cd12 * cd21;
@@ -403,6 +402,22 @@ pub fn refine_linear_wcs(
         [cd22 * cd_inv_scale, -cd12 * cd_inv_scale],
         [-cd21 * cd_inv_scale, cd11 * cd_inv_scale],
     ];
+
+    // Keep the reference pixel near image center to avoid unstable fits.
+    let max_shift_x = image_width as f64 * 0.45;
+    let max_shift_y = image_height as f64 * 0.45;
+    let crpix = (
+        if (tx - crpix_seed.0).abs() <= max_shift_x {
+            tx
+        } else {
+            crpix_seed.0
+        },
+        if (ty - crpix_seed.1).abs() <= max_shift_y {
+            ty
+        } else {
+            crpix_seed.1
+        },
+    );
 
     let new_wcs = Wcs::new(crpix, crval, cd);
 
@@ -455,40 +470,70 @@ fn compute_sky_centroid(sky: &[RaDec]) -> Option<RaDec> {
     Some(RaDec::new(ra, dec).normalize())
 }
 
-/// Solve 2x2 least squares: A * [x1, x2]^T = b
-fn solve_2x2_lstsq(a_mat: &[[f64; 2]], b: &[f64]) -> Option<(f64, f64)> {
+/// Solve 3x3 least squares: A * [x1, x2, x3]^T = b
+fn solve_3x3_lstsq(a_mat: &[[f64; 3]], b: &[f64]) -> Option<(f64, f64, f64)> {
     let n = a_mat.len();
-    if n < 2 || b.len() != n {
+    if n < 3 || b.len() != n {
         return None;
     }
 
     // Compute A^T * A
-    let mut ata = [[0.0; 2]; 2];
+    let mut ata = [[0.0; 3]; 3];
     for row in a_mat {
-        ata[0][0] += row[0] * row[0];
-        ata[0][1] += row[0] * row[1];
-        ata[1][0] += row[1] * row[0];
-        ata[1][1] += row[1] * row[1];
+        for i in 0..3 {
+            for j in 0..3 {
+                ata[i][j] += row[i] * row[j];
+            }
+        }
     }
 
     // Compute A^T * b
-    let mut atb = [0.0; 2];
+    let mut atb = [0.0; 3];
     for (i, row) in a_mat.iter().enumerate() {
-        atb[0] += row[0] * b[i];
-        atb[1] += row[1] * b[i];
+        for j in 0..3 {
+            atb[j] += row[j] * b[i];
+        }
     }
 
-    // Solve 2x2 system
-    let det = ata[0][0] * ata[1][1] - ata[0][1] * ata[1][0];
-    if det.abs() < 1e-20 {
-        return None;
+    // Solve 3x3 system via Gaussian elimination with partial pivoting.
+    for col in 0..3 {
+        let mut pivot = col;
+        let mut pivot_abs = ata[col][col].abs();
+        for row in (col + 1)..3 {
+            let cand = ata[row][col].abs();
+            if cand > pivot_abs {
+                pivot_abs = cand;
+                pivot = row;
+            }
+        }
+        if pivot_abs < 1e-18 {
+            return None;
+        }
+        if pivot != col {
+            ata.swap(col, pivot);
+            atb.swap(col, pivot);
+        }
+
+        for row in (col + 1)..3 {
+            let factor = ata[row][col] / ata[col][col];
+            ata[row][col] = 0.0;
+            for j in (col + 1)..3 {
+                ata[row][j] -= factor * ata[col][j];
+            }
+            atb[row] -= factor * atb[col];
+        }
     }
 
-    let inv_det = 1.0 / det;
-    let x1 = (ata[1][1] * atb[0] - ata[0][1] * atb[1]) * inv_det;
-    let x2 = (-ata[1][0] * atb[0] + ata[0][0] * atb[1]) * inv_det;
+    let mut x = [0.0; 3];
+    for i in (0..3).rev() {
+        let mut sum = atb[i];
+        for j in (i + 1)..3 {
+            sum -= ata[i][j] * x[j];
+        }
+        x[i] = sum / ata[i][i];
+    }
 
-    Some((x1, x2))
+    Some((x[0], x[1], x[2]))
 }
 
 /// Estimate scale from pixel and sky positions.

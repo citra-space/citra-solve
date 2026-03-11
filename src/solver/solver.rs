@@ -461,17 +461,15 @@ impl<'a> Solver<'a> {
         // from a small bright core so at least some pure-star patterns are tried.
         let mut quads: Vec<crate::pattern::Quad> = Vec::with_capacity(self.config.max_quads);
         let core_stars = sorted_stars.len().min(30).max(8);
-        let core_quads = generate_quads(
-            &sorted_stars[..core_stars],
-            core_stars,
-            20_000,
-        );
+        let core_quads = generate_quads(&sorted_stars[..core_stars], core_stars, 20_000);
         let core_quota = (self.config.max_quads * 3 / 5).max(220);
         let mut seen: HashSet<[usize; 4]> = HashSet::new();
         if !core_quads.is_empty() {
             let mut core_candidates: Vec<crate::pattern::Quad> = core_quads
                 .into_iter()
-                .filter(|q| q.max_edge_pixels >= min_edge_pixels && q.max_edge_pixels <= max_edge_pixels)
+                .filter(|q| {
+                    q.max_edge_pixels >= min_edge_pixels && q.max_edge_pixels <= max_edge_pixels
+                })
                 .collect();
             if core_candidates.len() > core_quota {
                 // Deterministic pseudo-random sampling across combination space.
@@ -736,7 +734,10 @@ impl<'a> Solver<'a> {
                 let c = result.hypothesis.wcs.crval();
                 let c_sep_arcsec = math::angular_separation(
                     &c,
-                    &crate::core::types::RaDec::new(truth_ra_deg.to_radians(), truth_dec_deg.to_radians()),
+                    &crate::core::types::RaDec::new(
+                        truth_ra_deg.to_radians(),
+                        truth_dec_deg.to_radians(),
+                    ),
                 )
                 .to_degrees()
                     * 3600.0;
@@ -852,7 +853,8 @@ impl<'a> Solver<'a> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         if debug {
-            for (idx, (cand, votes, quad_support)) in phase1_candidates.iter().take(12).enumerate() {
+            for (idx, (cand, votes, quad_support)) in phase1_candidates.iter().take(12).enumerate()
+            {
                 eprintln!(
                     "citra-debug: phase1_rank idx={} matched={} exp_cov={:.3} det_cov={:.3} rms_px={:.2} med_px={:.2} odds={:.2} votes={} quad_support={} score={:.2}",
                     idx,
@@ -960,12 +962,10 @@ impl<'a> Solver<'a> {
             let min_matches = if wide_field { 5usize } else { 6usize }.saturating_sub(vote_slack);
             let max_rms = if wide_field { 12.0 } else { 10.0 };
             let max_med = if wide_field { 14.0 } else { 12.0 };
-            let min_detected_cov = (if wide_field { 0.055 } else { 0.075 }
-                - 0.006 * vote_slack as f64)
-                .max(0.04);
-            let min_expected_cov = (if wide_field { 0.060 } else { 0.080 }
-                - 0.006 * vote_slack as f64)
-                .max(0.04);
+            let min_detected_cov =
+                (if wide_field { 0.055 } else { 0.075 } - 0.006 * vote_slack as f64).max(0.04);
+            let min_expected_cov =
+                (if wide_field { 0.060 } else { 0.080 } - 0.006 * vote_slack as f64).max(0.04);
             let min_brightness_consistency = if tight.num_matched <= 6 { 0.44 } else { 0.30 };
 
             if tight.num_matched < min_matches {
@@ -1082,8 +1082,7 @@ impl<'a> Solver<'a> {
                 || finalists[0].3 >= finalists[1].3.saturating_add(1);
             let dominant = vote_dominant
                 || finalists[0].0.num_matched >= finalists[1].0.num_matched + 2
-                || finalists[0].0.hypothesis.log_odds
-                    >= finalists[1].0.hypothesis.log_odds + 10.0;
+                || finalists[0].0.hypothesis.log_odds >= finalists[1].0.hypothesis.log_odds + 10.0;
             let runner_center_sep_deg = math::angular_separation(
                 &finalists[0].0.hypothesis.wcs.crval(),
                 &finalists[1].0.hypothesis.wcs.crval(),
@@ -1102,10 +1101,9 @@ impl<'a> Solver<'a> {
             let residual_advantage = finalists[0].0.median_residual_pixels + 0.7
                 < finalists[1].0.median_residual_pixels
                 || finalists[0].0.rms_residual_pixels + 1.0 < finalists[1].0.rms_residual_pixels;
-            let coverage_advantage =
-                finalists[0].0.detected_coverage + 0.025 > finalists[1].0.detected_coverage
-                    || finalists[0].0.expected_coverage + 0.020
-                        > finalists[1].0.expected_coverage;
+            let coverage_advantage = finalists[0].0.detected_coverage + 0.025
+                > finalists[1].0.detected_coverage
+                || finalists[0].0.expected_coverage + 0.020 > finalists[1].0.expected_coverage;
             let high_confidence_best = finalists[0].0.num_matched >= 6
                 && finalists[0].0.hypothesis.log_odds >= 32.0
                 && finalists[0].0.detected_coverage >= 0.09;

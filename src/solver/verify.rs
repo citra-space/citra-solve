@@ -569,17 +569,14 @@ fn compute_log_odds(
 
     // Tetra3-style resilience: reward inlier concentration but avoid letting
     // this dominate when only a handful of stars are matched.
-    let inlier_ratio = residuals
-        .iter()
-        .filter(|&&r| r <= sigma * 2.0)
-        .count() as f64
-        / num_matched as f64;
+    let inlier_ratio =
+        residuals.iter().filter(|&&r| r <= sigma * 2.0).count() as f64 / num_matched as f64;
     let inlier_score = 6.0 * (inlier_ratio - 0.50);
 
     // Random-alignment term: approximate chance of a spurious match inside the
     // spatial tolerance window. This keeps low-support hypotheses in check.
-    let p_rand_single = ((std::f64::consts::PI * max_match * max_match) / image_area)
-        .clamp(1e-9, 0.30);
+    let p_rand_single =
+        ((std::f64::consts::PI * max_match * max_match) / image_area).clamp(1e-9, 0.30);
     let random_alignment_score = ((num_matched as f64) * p_rand_single.ln().abs()) * 0.20;
 
     residual_score
